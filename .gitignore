@@ -1,0 +1,26 @@
+# Secrets — never commit these
+.env
+*.env
+
+# Database file — stored in PostgreSQL on production
+agents.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Generated images (large binary files)
+generated_images/
+*.png
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: agent-builder-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false        # you will paste this from Supabase
+      - key: HF_TOKEN
+        sync: false        # your Hugging Face token

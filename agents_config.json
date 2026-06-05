@@ -1,0 +1,22 @@
+{
+  "agents": [
+    {
+      "name": "image_generator",
+      "description": "Generates a new image from a text description or prompt",
+      "file": "generated_code/general_assistant_agent.py",
+      "input_format": "text prompt describing the image"
+    },
+    {
+      "name": "image_editor",
+      "description": "Edits or modifies an existing image based on text instructions. Requires an image file path and an edit description.",
+      "file": "image_editor_agent.py",
+      "input_format": "image_path|||edit description"
+    },
+    {
+      "name": "essay_writer",
+      "description": "Writes detailed academic essays on any topic",
+      "file": "generated_code/essay_writer_agent.py",
+      "input_format": "essay topic or request"
+    }
+  ]
+}

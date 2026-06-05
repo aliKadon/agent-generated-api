@@ -1,0 +1,32 @@
+
+Query: text to audio, Task: text-to-speech
+vdavidr/textToAudioTTS-voxcpm2-audiobook-champion
+
+Query: audio generation, Task: text-to-speech
+bosonai/higgs-audio-v2-generation-3B-base
+szhengac25/higgs-audio-v2-generation-3B-base
+PierrunoYT/higgs-audio-v2-generation-3B-base
+
+Query: music, Task: text-to-speech
+
+Query: text to speech, Task: text-to-speech
+Imxxn/AudioCourseU6-TextToSpeech
+HamzaSidhu786/urdu_text_to_speech_tts
+bilalRHCH/Arabic-text-to-speech
+Vedika35/Vedika_text_to_speech
+Daniel981215/speecht5-text-to-speech-voxpopuli-nl
+Asakrg/hausa-text-to-speech-fine-tune
+jarguello76/text-to-speech-speecht5_finetuned_voxpopuli_es
+navgurukul-ai-labs/text-to-speech-en-IN-piper
+sandychoii/speecht5-finetuned-voxpopuli-nl-text-to-speech
+Sajid030/text-to-speech
+doannguyenmmo/VI-TEXT-TO-SPEECH
+Nithu/text-to-speech
+ngonko/application-text-to-speech
+the-vedantic-coder/text-to-speech-en-US-web
+lojban/text-to-speech
+sru17/Text_to_Speech
+Wromo/Next-text-to-speech-tts
+Sharanya186/TextToSpeech
+iam-bigsam/Orpheus_text-to-speech
+remiai3/Text-to-Speech_by_facebookmms-tts-eng_project_guide

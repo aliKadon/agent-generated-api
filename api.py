@@ -477,6 +477,78 @@ def generate_continue(request: GenerateContinueRequest):
 
 _CHAT_SESSIONS: dict[str, list] = {}
 
+# None = all agents active. A set means only those names are active.
+_ACTIVE_AGENTS: set[str] | None = None
+
+
+class ChatAgentStatus(BaseModel):
+    name:        str
+    description: str
+    method:      str
+    active:      bool
+
+
+@app.get(
+    "/chat/agents",
+    response_model=list[ChatAgentStatus],
+    summary="List all agents with their active/inactive status for chat",
+)
+def list_chat_agents():
+    with _db.get_db() as conn:
+        rows = _db.fetchall(conn, "SELECT name, description, method FROM agents ORDER BY name")
+    return [
+        {
+            "name":        r["name"],
+            "description": r["description"],
+            "method":      r["method"],
+            "active":      _ACTIVE_AGENTS is None or r["name"] in _ACTIVE_AGENTS,
+        }
+        for r in rows
+    ]
+
+
+@app.post(
+    "/chat/agents/{name}",
+    summary="Add an agent to the active chat pool",
+)
+def activate_chat_agent(name: str):
+    global _ACTIVE_AGENTS
+    ph = "%s" if os.getenv("DATABASE_URL") else "?"
+    with _db.get_db() as conn:
+        row = _db.fetchone(conn, f"SELECT name FROM agents WHERE name = {ph}", (name,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No agent named '{name}' in database.")
+
+    if _ACTIVE_AGENTS is None:
+        # All were active — keep all, nothing changes
+        return {"message": f"Agent '{name}' is already active (all agents are active by default)."}
+
+    _ACTIVE_AGENTS.add(name)
+    return {"message": f"Agent '{name}' added to chat.", "active_agents": sorted(_ACTIVE_AGENTS)}
+
+
+@app.delete(
+    "/chat/agents/{name}",
+    summary="Remove an agent from the active chat pool",
+)
+def deactivate_chat_agent(name: str):
+    global _ACTIVE_AGENTS
+    ph = "%s" if os.getenv("DATABASE_URL") else "?"
+    with _db.get_db() as conn:
+        row = _db.fetchone(conn, f"SELECT name FROM agents WHERE name = {ph}", (name,))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No agent named '{name}' in database.")
+
+    if _ACTIVE_AGENTS is None:
+        # First deactivation — initialise the set with all agents except this one
+        with _db.get_db() as conn:
+            all_rows = _db.fetchall(conn, "SELECT name FROM agents")
+        _ACTIVE_AGENTS = {r["name"] for r in all_rows} - {name}
+    else:
+        _ACTIVE_AGENTS.discard(name)
+
+    return {"message": f"Agent '{name}' removed from chat.", "active_agents": sorted(_ACTIVE_AGENTS)}
+
 
 class ChatRequest(BaseModel):
     message:    str
@@ -497,7 +569,12 @@ def chat(request: ChatRequest):
         import orchestrator_agent as _oa
         from orchestrator_agent import discover_agents, memory_pass, route, execute, synthesize
 
-        _oa.AGENTS    = discover_agents()
+        all_agents = discover_agents()
+        _oa.AGENTS  = (
+            [a for a in all_agents if a["name"] in _ACTIVE_AGENTS]
+            if _ACTIVE_AGENTS is not None
+            else all_agents
+        )
         history       = _CHAT_SESSIONS.setdefault(request.session_id, [])
         mem_ctx       = memory_pass(request.message)
         route_result  = route(request.message)

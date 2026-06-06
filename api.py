@@ -338,7 +338,12 @@ def generate_start(request: GenerateStartRequest):
             )
         raise HTTPException(status_code=500, detail=f"Model search failed: {err}")
 
+    # Prefer models that are both free AND have an active inference provider.
+    # Fall back to any free model if HuggingFace has restricted provider access
+    # (common for text-generation — image models are usually still available).
     free_models = [m for m in results if m.is_free and m.has_provider][:15]
+    if not free_models:
+        free_models = [m for m in results if m.is_free][:15]
     if not free_models:
         raise HTTPException(status_code=404, detail="No free models found. Try a different description.")
 
@@ -395,6 +400,8 @@ async def generate_start_stream(request: GenerateStartRequest):
         try:
             results, _ = search_best_llms(request.description, progress_cb=cb)
             free_models = [m for m in results if m.is_free and m.has_provider][:15]
+            if not free_models:
+                free_models = [m for m in results if m.is_free][:15]
 
             if not free_models:
                 progress_q.put({

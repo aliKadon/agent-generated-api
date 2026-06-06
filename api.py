@@ -8,9 +8,10 @@ Agent management:
   POST   /agents/sync              — rescan disk and update the database
 
 Agent generation (3-step wizard):
-  POST   /agents/generate/start    — step 1: describe → get model list
-  POST   /agents/generate/continue — step 2: pick model → get questions + tools
-  POST   /agents/generate/continue — step 3: answer questions → agent created
+  POST   /agents/generate/start         — step 1: describe → get model list
+  POST   /agents/generate/start/stream  — step 1 with live SSE progress updates
+  POST   /agents/generate/continue      — step 2: pick model → get questions + tools
+  POST   /agents/generate/continue      — step 3: answer questions → agent created
 
 Chat:
   POST   /chat                     — send a message to the orchestrator
@@ -23,14 +24,19 @@ Production (Render):
   Set DATABASE_URL env var to your Supabase / Neon PostgreSQL connection string.
 """
 
+import asyncio
 import glob
+import json
 import os
+import queue
 import re
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import db as _db
@@ -358,6 +364,109 @@ def generate_start(request: GenerateStartRequest):
         ],
         "message": "Pick a model using its index number, then call /agents/generate/continue.",
     }
+
+
+@app.post(
+    "/agents/generate/start/stream",
+    summary="Step 1 (streaming) — same as /start but streams live progress via Server-Sent Events",
+    description=(
+        "Returns a text/event-stream. Each event is a JSON object:\n\n"
+        "  `{\"status\": \"planning\",  \"message\": \"...\"}` — stages before searching\n\n"
+        "  `{\"status\": \"searching\", \"message\": \"...\"}` — one HuggingFace query\n\n"
+        "  `{\"status\": \"analyzing\", \"message\": \"...\"}` — checking providers\n\n"
+        "  `{\"status\": \"progress\",  \"message\": \"...\"}` — per-model progress\n\n"
+        "  `{\"status\": \"ranking\",   \"message\": \"...\"}` — final sort\n\n"
+        "  `{\"status\": \"done\", \"session_id\": \"...\", \"models\": [...]}` — final result\n\n"
+        "  `{\"status\": \"error\", \"message\": \"...\", \"code\": N}` — on failure\n\n"
+        "Use the `session_id` from the `done` event to call `/agents/generate/continue`."
+    ),
+)
+async def generate_start_stream(request: GenerateStartRequest):
+    import sys
+    sys.path.insert(0, _ROOT)
+    from services.search import search_best_llms
+
+    progress_q: queue.Queue = queue.Queue()
+
+    def _run_search() -> None:
+        def cb(status: str, message: str) -> None:
+            progress_q.put({"status": status, "message": message})
+
+        try:
+            results, _ = search_best_llms(request.description, progress_cb=cb)
+            free_models = [m for m in results if m.is_free and m.has_provider][:15]
+
+            if not free_models:
+                progress_q.put({
+                    "status":  "error",
+                    "message": "No free models found. Try a different description.",
+                    "code":    404,
+                })
+                return
+
+            session_id = uuid.uuid4().hex[:10]
+            _GEN_SESSIONS[session_id] = {
+                "step":        "select_model",
+                "description": request.description,
+                "free_models": free_models,
+            }
+
+            progress_q.put({
+                "status":     "done",
+                "message":    f"Found {len(free_models)} models ready to use!",
+                "session_id": session_id,
+                "step":       "select_model",
+                "models": [
+                    {
+                        "index":             i + 1,
+                        "name":              m.name,
+                        "provider":          m.provider,
+                        "method":            m.inferred_method,
+                        "has_chat_template": m.has_chat_template,
+                    }
+                    for i, m in enumerate(free_models)
+                ],
+            })
+
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "Too Many Requests" in err or "rate limit" in err.lower():
+                import re as _re
+                wait = _re.search(r"Retry after (\d+) seconds", err)
+                secs = wait.group(1) if wait else "a few"
+                progress_q.put({
+                    "status":  "error",
+                    "message": f"HuggingFace rate limit. Wait {secs}s then retry. Set HF_TOKEN env var.",
+                    "code":    429,
+                })
+            else:
+                progress_q.put({"status": "error", "message": f"Model search failed: {err}", "code": 500})
+        finally:
+            progress_q.put(None)  # sentinel — always last
+
+    threading.Thread(target=_run_search, daemon=True).start()
+
+    async def event_stream():
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                item = await loop.run_in_executor(None, lambda: progress_q.get(timeout=120))
+            except queue.Empty:
+                yield f"data: {json.dumps({'status': 'error', 'message': 'Search timed out after 120 seconds.', 'code': 504})}\n\n"
+                break
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",      # disable Render/nginx buffering
+            "Connection":        "keep-alive",
+        },
+    )
 
 
 @app.post(

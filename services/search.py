@@ -154,12 +154,25 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str) -> dict:
 
 # ── search_best_llms ──────────────────────────────────────────────────────────
 
-def search_best_llms(agent_prompt: str, limit: int = MODEL_SEARCH_LIMIT) -> tuple[list[ModelSuggestion], str]:
+def search_best_llms(
+    agent_prompt: str,
+    limit: int = MODEL_SEARCH_LIMIT,
+    progress_cb=None,
+) -> tuple[list[ModelSuggestion], str]:
     """
     Search HuggingFace for models that fit the agent prompt.
     Returns (ranked_suggestions, primary_task).
+
+    progress_cb(status, message) is called at each stage so callers
+    can stream live progress to clients (e.g. via SSE).
     """
-    api  = HfApi(token=os.getenv("HF_TOKEN"))
+    def emit(status: str, message: str) -> None:
+        if progress_cb:
+            progress_cb(status, message)
+
+    api = HfApi(token=os.getenv("HF_TOKEN"))
+
+    emit("planning", "Analyzing your request and planning the search...")
     plan = generate_search_plan(agent_prompt)
     print("\nSearch plan result:"); print(plan)
 
@@ -175,10 +188,16 @@ def search_best_llms(agent_prompt: str, limit: int = MODEL_SEARCH_LIMIT) -> tupl
         queries     = ["stable diffusion", "sdxl", "flux"]
         boost_words = ["diffusion", "sdxl"]
 
-    suggestions: list[ModelSuggestion] = []
+    # ── Pass 1: collect raw candidates from list_models (quick) ─────────────────
+    seen_ids: set[str] = set()
+    raw: list[tuple]   = []   # (model_id, task, score, is_free)
 
+    total_searches = len(queries) * len(tasks)
+    search_num     = 0
     for q in queries:
         for task in tasks:
+            search_num += 1
+            emit("searching", f"Searching for '{q}' ({task}) [{search_num}/{total_searches}]...")
             try:
                 models = api.list_models(
                     search=q, task=task,
@@ -190,8 +209,9 @@ def search_best_llms(agent_prompt: str, limit: int = MODEL_SEARCH_LIMIT) -> tupl
 
             for model in models:
                 mid = model.modelId
-                if any(s.name == mid for s in suggestions):
+                if mid in seen_ids:
                     continue
+                seen_ids.add(mid)
 
                 tags  = model.tags or []
                 score = (
@@ -203,21 +223,31 @@ def search_best_llms(agent_prompt: str, limit: int = MODEL_SEARCH_LIMIT) -> tupl
                         score += SCORE_BOOST_KEYWORD
 
                 is_free = not getattr(model, "gated", False)
-                mi      = get_model_full_info(api, mid, task)
+                raw.append((mid, task, score, is_free))
 
-                suggestions.append(ModelSuggestion(
-                    name=mid,
-                    url=HF_MODEL_URL + mid,
-                    score=score,
-                    is_free=is_free,
-                    has_provider=mi["provider"] is not None,
-                    provider=mi["provider"],
-                    supported_task=mi["supported_task"],
-                    inferred_method=mi["inferred_method"],
-                    has_chat_template=mi["has_chat_template"],
-                    pipeline_tag=mi["pipeline_tag"],
-                    tags=mi["tags"],
-                ))
+    # ── Pass 2: fetch full provider/method info per model (the slow part) ────────
+    total = len(raw)
+    emit("analyzing", f"Found {total} candidates. Checking provider availability...")
 
+    suggestions: list[ModelSuggestion] = []
+    for i, (mid, task, score, is_free) in enumerate(raw):
+        if i % 5 == 0:
+            emit("progress", f"Checking model {i + 1}/{total}...")
+        mi = get_model_full_info(api, mid, task)
+        suggestions.append(ModelSuggestion(
+            name=mid,
+            url=HF_MODEL_URL + mid,
+            score=score,
+            is_free=is_free,
+            has_provider=mi["provider"] is not None,
+            provider=mi["provider"],
+            supported_task=mi["supported_task"],
+            inferred_method=mi["inferred_method"],
+            has_chat_template=mi["has_chat_template"],
+            pipeline_tag=mi["pipeline_tag"],
+            tags=mi["tags"],
+        ))
+
+    emit("ranking", f"Ranking {len(suggestions)} models by score and availability...")
     suggestions.sort(key=lambda x: (not x.is_free, not x.has_provider, -x.score))
     return suggestions, tasks[0]

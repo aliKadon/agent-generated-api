@@ -124,17 +124,33 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str) -> dict:
             for ind in CHAT_TEMPLATE_INDICATORS
         )
 
-        mapping = getattr(info, "inference_provider_mapping", None)
+        # Try multiple attribute names — huggingface_hub changed this in newer versions
+        mapping = (
+            getattr(info, "inference_provider_mapping", None)
+            or getattr(info, "inference_providers", None)
+            or getattr(info, "inferenceProviderMapping", None)
+        )
         if not mapping:
             return result
 
-        items = mapping.values() if isinstance(mapping, dict) else mapping
+        items = mapping.values() if isinstance(mapping, dict) else list(mapping)
+
+        # Log the first entry so we can see the real status value in Render logs
+        if items:
+            first = next(iter(items))
+            raw_status = first.get("status") if isinstance(first, dict) else getattr(first, "status", None)
+            print(f"  [DEBUG] {model_id} provider status value: {raw_status!r}")
+
+        # "live" is the historic value; accept any non-error/disabled status
+        # so the code keeps working if HuggingFace renames it
+        _DEAD_STATUSES = {"error", "disabled", "unsupported", "offline", "unavailable", None}
+
         for pd in items:
             status = pd.get("status") if isinstance(pd, dict) else getattr(pd, "status", None)
             prov   = pd.get("provider") if isinstance(pd, dict) else getattr(pd, "provider", None)
             ptask  = pd.get("task") if isinstance(pd, dict) else getattr(pd, "task", None)
 
-            if status == "live":
+            if status not in _DEAD_STATUSES and prov:
                 actual = ptask or search_task
                 result["provider"] = prov
                 result["supported_task"] = actual

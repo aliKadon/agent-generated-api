@@ -168,20 +168,28 @@ def generate_safe_agent_code(
         return reply'''
 
     elif inferred_method == "text_to_image":
+        # Shared image-call snippet: try the configured provider first,
+        # fall back to default HF routing if the provider rejects the model.
+        _img_call = '''\
+        try:
+            image = client.text_to_image(prompt=user_input, model=model_name)
+        except Exception as _pe:
+            from huggingface_hub import InferenceClient as _FbIC
+            image = _FbIC(api_key=HF_TOKEN).text_to_image(prompt=user_input, model=model_name)'''
         if "image_saver" in selected_tools:
-            inference_body = '''\
-        image = client.text_to_image(prompt=user_input, model=model_name)
+            inference_body = _img_call + '''
         return tool_image_saver(image, prompt=user_input, model_name=model_name)'''
         else:
-            inference_body = '''\
-        image = client.text_to_image(prompt=user_input, model=model_name)
+            inference_body = _img_call + '''
         import os as _os
+        from datetime import datetime as _dt
         out_dir = "generated_images"
         _os.makedirs(out_dir, exist_ok=True)
-        safe = "".join(c for c in user_input[:40] if c.isalnum() or c in " _-").strip().replace(" ", "_")
-        out_path = f"{out_dir}/{safe}.png"
+        ts       = _dt.now().strftime("%Y%m%d_%H%M%S")
+        safe     = "".join(c for c in user_input[:40] if c.isalnum() or c in " _-").strip().replace(" ", "_") or "image"
+        out_path = f"{out_dir}/{ts}_{safe}.png"
         image.save(out_path)
-        return f"Image saved to {out_path}"'''
+        return f"Image saved: {out_path}"'''
 
     elif inferred_method == "image_to_image":
         # image-to-image: user provides an image path + edit description
@@ -261,7 +269,7 @@ def generate_safe_agent_code(
         f"# Conversation history — keeps context across turns (max {HISTORY_MAX_MESSAGES} messages)",
         "HISTORY: list = []",
         "",
-        f"client = InferenceClient(provider=PROVIDER, api_key=HF_TOKEN)",
+        "client = InferenceClient(provider=PROVIDER, api_key=HF_TOKEN) if PROVIDER else InferenceClient(api_key=HF_TOKEN)",
         "",
         "# ── tool implementations ─────────────────────────────────────────────────",
         tool_impl,

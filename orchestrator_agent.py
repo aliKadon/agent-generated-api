@@ -231,13 +231,16 @@ def tool_translator(text: str, target_lang: str = "en") -> str:
 def tool_pdf_generator(text: str, filename: str = "output.pdf") -> str:
     try:
         from fpdf import FPDF
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_files")
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, os.path.basename(filename))
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", size=12)
         for line in text.split("\n"):
             pdf.multi_cell(0, 10, line)
-        pdf.output(filename)
-        return f"PDF saved: {filename}"
+        pdf.output(out_path)
+        return f"PDF saved: generated_files/{os.path.basename(filename)}"
     except ImportError:
         return "pdf_generator requires: pip install fpdf2"
     except Exception as e:

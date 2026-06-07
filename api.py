@@ -35,8 +35,9 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import db as _db
@@ -189,6 +190,47 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# ── Static file serving for agent-generated files ──────────────────────────────
+_GENERATED_IMAGES = os.path.join(_ROOT, "generated_images")
+_GENERATED_FILES  = os.path.join(_ROOT, "generated_files")
+os.makedirs(_GENERATED_IMAGES, exist_ok=True)
+os.makedirs(_GENERATED_FILES,  exist_ok=True)
+
+app.mount("/files/images", StaticFiles(directory=_GENERATED_IMAGES), name="gen_images")
+app.mount("/files/docs",   StaticFiles(directory=_GENERATED_FILES),  name="gen_docs")
+
+# Patterns to extract a generated file path from an agent's reply string.
+# Each entry: (compiled regex, url sub-path)
+_FILE_URL_PATTERNS = [
+    # image_editor_agent: "Edited image saved: generated_images/timestamp_name.png"
+    (re.compile(r'generated_images[/\\]([\w\-. ]+\.(?:png|jpg|jpeg|webp|gif))', re.I), "images"),
+    # text_to_image agents: "Image saved to generated_image.png" (root dir)
+    (re.compile(r'saved to\s+([\w\-. ]+\.(?:png|jpg|jpeg|webp|gif))', re.I), "images"),
+    # PDF: "PDF saved: generated_files/xxx.pdf"
+    (re.compile(r'generated_files[/\\]([\w\-. ]+\.pdf)', re.I), "docs"),
+    # Fallback PDF: "PDF saved: output.pdf"
+    (re.compile(r'PDF saved[:\s]+([\w\-. ]+\.pdf)', re.I), "docs"),
+    # Any other known file extension mentioned in reply
+    (re.compile(r'saved[:\s]+([\w\-./\\]+\.(?:mp3|mp4|wav|csv|xlsx|zip))', re.I), "docs"),
+]
+
+
+def _extract_file_url(reply: str, base_url: str) -> str | None:
+    """Return a public URL if the reply contains a path to a generated file."""
+    base = base_url.rstrip("/")
+    for pattern, subdir in _FILE_URL_PATTERNS:
+        m = pattern.search(reply)
+        if m:
+            fname = os.path.basename(m.group(1)).strip(" .,;:")
+            # For root-level image saves ("generated_image.png"), copy to generated_images
+            if subdir == "images" and not os.path.exists(os.path.join(_GENERATED_IMAGES, fname)):
+                src = os.path.join(_ROOT, fname)
+                if os.path.exists(src):
+                    import shutil
+                    shutil.copy2(src, os.path.join(_GENERATED_IMAGES, fname))
+            return f"{base}/files/{subdir}/{fname}"
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -692,10 +734,11 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply:      str
     session_id: str
+    file_url:   str | None = None
 
 
 @app.post("/chat", response_model=ChatResponse, summary="Chat with the orchestrator agent")
-def chat(request: ChatRequest):
+def chat(request: ChatRequest, req: Request):
     import sys
     sys.path.insert(0, _ROOT)
 
@@ -720,7 +763,8 @@ def chat(request: ChatRequest):
         if len(history) > 20:
             history[:] = history[-20:]
 
-        return {"reply": reply, "session_id": request.session_id}
+        file_url = _extract_file_url(reply, str(req.base_url))
+        return {"reply": reply, "session_id": request.session_id, "file_url": file_url}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

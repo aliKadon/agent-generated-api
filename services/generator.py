@@ -183,8 +183,13 @@ def generate_safe_agent_code(
             inference_body = _img_call + '''
         import os as _os
         from datetime import datetime as _dt
-        _proj_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        out_dir    = _os.path.join(_proj_root, "generated_images")
+        _here = _os.path.abspath(__file__)
+        _proj_root = _os.path.dirname(_here)
+        for _ in range(5):
+            if _os.path.exists(_os.path.join(_proj_root, "api.py")):
+                break
+            _proj_root = _os.path.dirname(_proj_root)
+        out_dir  = _os.path.join(_proj_root, "generated_images")
         _os.makedirs(out_dir, exist_ok=True)
         ts       = _dt.now().strftime("%Y%m%d_%H%M%S")
         safe     = "".join(c for c in user_input[:40] if c.isalnum() or c in " _-").strip().replace(" ", "_") or "image"
@@ -214,8 +219,13 @@ def generate_safe_agent_code(
             model=model_name,
         )
         from datetime import datetime as _dt
-        _proj_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        out_dir    = _os.path.join(_proj_root, "generated_images")
+        _here = _os.path.abspath(__file__)
+        _proj_root = _os.path.dirname(_here)
+        for _ in range(5):
+            if _os.path.exists(_os.path.join(_proj_root, "api.py")):
+                break
+            _proj_root = _os.path.dirname(_proj_root)
+        out_dir  = _os.path.join(_proj_root, "generated_images")
         _os.makedirs(out_dir, exist_ok=True)
         ts       = _dt.now().strftime("%Y%m%d_%H%M%S")
         safe     = "".join(c for c in edit_text[:40] if c.isalnum() or c in " _-").strip().replace(" ", "_")

@@ -233,9 +233,14 @@ def tool_image_saver(image_obj, prompt: str, model_name: str = "unknown") -> str
         from datetime import datetime as _dt
         import os as _os
 
-        # ── output folder — always resolved to project root regardless of CWD ──
-        _proj_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        out_dir    = _os.path.join(_proj_root, "generated_images")
+        # ── output folder — walk up from __file__ until api.py is found ──────
+        _here = _os.path.abspath(__file__)
+        _proj_root = _os.path.dirname(_here)
+        for _ in range(5):
+            if _os.path.exists(_os.path.join(_proj_root, "api.py")):
+                break
+            _proj_root = _os.path.dirname(_proj_root)
+        out_dir = _os.path.join(_proj_root, "generated_images")
         _os.makedirs(out_dir, exist_ok=True)
 
         # ── build filename from timestamp + first 40 chars of prompt ───────

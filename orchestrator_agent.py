@@ -436,25 +436,38 @@ def _synth_system_prompt() -> str:
     )
 
 
+def _clean_reply(text: str) -> str:
+    """Strip artefacts that small models echo back from the system prompt."""
+    # Remove echoed system labels
+    for prefix in ("[Result from action]", "[System]", "[Memory]", "[Memory context]"):
+        if text.startswith(prefix):
+            text = text[len(prefix):].lstrip("\n: ")
+    # Strip hallucinated markdown image links that point to external/fake URLs
+    # (real file URLs come via the file_url field, not embedded in reply text)
+    text = re.sub(r'!\[[^\]]*\]\(https?://(?!agent-generated-api)[^\)]+\)', '', text)
+    return text.strip()
+
+
 def synthesize(user_input: str, action_result: str, mem_ctx: str, route_action: str = "chat") -> str:
     sys_msg = _synth_system_prompt()
-    extras  = []
-    if mem_ctx:
-        extras.append(mem_ctx)
-    if action_result:
-        extras.append(f"[Result from action]\n{action_result}")
-    elif route_action in ("agent", "tool"):
-        # Router chose an agent/tool but execution returned nothing — something failed
-        extras.append(
-            "[System] The agent/tool was called but returned no result. "
-            "Inform the user that the action could not be completed."
-        )
-    # route_action == "chat" with no action_result means no agent matched — synthesizer
-    # already knows this from agents_note in the system prompt, no extra hint needed
-    if extras:
-        sys_msg += "\n\n" + "\n\n".join(extras)
 
-    msgs = [{"role": "system", "content": sys_msg}] + HISTORY + [{"role": "user", "content": user_input}]
+    # Build the final user message — put context here, NOT in system message.
+    # Small models echo system message content; putting results in the user turn
+    # avoids that.
+    context_parts = []
+    if mem_ctx:
+        context_parts.append(mem_ctx)
+    if action_result:
+        context_parts.append(f"Tool/agent result:\n{action_result}")
+    elif route_action in ("agent", "tool"):
+        context_parts.append(
+            "Note: the agent/tool was called but returned no result. "
+            "Tell the user the action could not be completed."
+        )
+
+    final_user_msg = "\n\n".join(context_parts + [user_input]) if context_parts else user_input
+
+    msgs = [{"role": "system", "content": sys_msg}] + HISTORY + [{"role": "user", "content": final_user_msg}]
     try:
         r = client.chat_completion(
             model=ROUTER_MODEL,
@@ -462,7 +475,7 @@ def synthesize(user_input: str, action_result: str, mem_ctx: str, route_action: 
             max_tokens=800,
             temperature=0.7,
         )
-        return r.choices[0].message.content
+        return _clean_reply(r.choices[0].message.content)
     except Exception as e:
         # if synthesis fails but we have a direct result, return it
         return action_result if action_result else f"Error: {e}"

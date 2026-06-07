@@ -763,7 +763,8 @@ def chat(request: ChatRequest, req: Request):
         if len(history) > 20:
             history[:] = history[-20:]
 
-        file_url = _extract_file_url(reply, str(req.base_url))
+        base = str(req.base_url)
+        file_url = _extract_file_url(action_result, base) or _extract_file_url(reply, base)
         return {"reply": reply, "session_id": request.session_id, "file_url": file_url}
 
     except Exception as e:

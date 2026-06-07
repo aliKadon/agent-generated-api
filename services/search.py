@@ -154,10 +154,21 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str) -> dict:
                 actual = ptask or search_task
                 result["provider"] = prov
                 result["supported_task"] = actual
+
+                # Determine method — but never let the provider downgrade a
+                # specific search_task to plain text_generation.
+                # e.g. we searched "text-to-image" but provider reports
+                # "text-generation": trust the search_task, not the provider.
+                search_method = TASK_TO_METHOD.get(search_task, "text_generation")
+
                 if actual == "conversational":
                     result["inferred_method"] = "chat_completion"
                 elif actual == "text-generation" and result["has_chat_template"]:
                     result["inferred_method"] = "chat_completion"
+                elif search_method != "text_generation":
+                    # We searched for a specific non-text modality — keep it
+                    result["inferred_method"] = search_method
+                    result["supported_task"]  = search_task
                 else:
                     result["inferred_method"] = TASK_TO_METHOD.get(actual, "text_generation")
                 break
@@ -198,11 +209,100 @@ def search_best_llms(
     if isinstance(tasks, str):
         tasks = [tasks]
 
-    # Override for obvious image prompts
-    if any(w in agent_prompt.lower() for w in ["image", "picture", "photo"]):
-        tasks       = ["text-to-image"]
-        queries     = ["stable diffusion", "sdxl", "flux"]
-        boost_words = ["diffusion", "sdxl"]
+    # ── Keyword-based task overrides ─────────────────────────────────────────────
+    # Check these AFTER the LLM plan so we can correct it when needed.
+    # Order matters: more specific patterns first.
+    _p = agent_prompt.lower()
+
+    _OVERRIDES = [
+        # image editing — check before image creation (more specific)
+        {
+            "match_all":  [["image", "picture", "photo"]],
+            "match_any":  ["edit", "modify", "change", "alter", "adjust", "transform", "enhance", "fix"],
+            "task":       "image-to-image",
+            "queries":    ["flux image editing", "stable diffusion img2img", "image editing"],
+            "boost":      ["edit", "img2img"],
+        },
+        # image / art creation
+        {
+            "match_any":  ["generate image", "create image", "make image", "draw", "paint",
+                           "sketch", "artwork", "illustration", "picture", "text to image",
+                           "text-to-image", "image", "photo"],
+            "task":       "text-to-image",
+            "queries":    ["stable diffusion", "sdxl", "flux"],
+            "boost":      ["diffusion", "sdxl"],
+        },
+        # speech recognition
+        {
+            "match_any":  ["transcribe", "speech to text", "speech-to-text", "voice to text",
+                           "audio to text", "recognize speech", "stt", "whisper"],
+            "task":       "automatic-speech-recognition",
+            "queries":    ["whisper", "speech recognition", "asr"],
+            "boost":      ["whisper"],
+        },
+        # text-to-speech
+        {
+            "match_any":  ["text to speech", "text-to-speech", "tts", "read aloud",
+                           "voice synthesis", "speak text", "narrate"],
+            "task":       "text-to-speech",
+            "queries":    ["text to speech", "tts", "voice"],
+            "boost":      ["tts", "coqui"],
+        },
+        # music / audio generation
+        {
+            "match_any":  ["generate music", "create music", "music generation",
+                           "generate audio", "create audio", "audio generation", "musicgen"],
+            "task":       "text-to-audio",
+            "queries":    ["musicgen", "audio generation", "music"],
+            "boost":      ["musicgen"],
+        },
+        # translation
+        {
+            "match_any":  ["translate", "translation", "convert language", "language translation"],
+            "task":       "translation",
+            "queries":    ["translation", "multilingual", "nllb", "opus-mt"],
+            "boost":      ["translation", "multilingual"],
+        },
+        # summarization
+        {
+            "match_any":  ["summarize", "summarization", "condense", "shorten text", "abstract"],
+            "task":       "summarization",
+            "queries":    ["summarization", "bart", "pegasus"],
+            "boost":      ["summarization", "bart"],
+        },
+        # image classification
+        {
+            "match_any":  ["classify image", "image classification", "recognize image",
+                           "identify in image", "what is in image"],
+            "task":       "image-classification",
+            "queries":    ["image classification", "vit", "resnet"],
+            "boost":      ["classification", "vit"],
+        },
+        # object detection
+        {
+            "match_any":  ["detect object", "object detection", "find objects",
+                           "bounding box", "yolo"],
+            "task":       "object-detection",
+            "queries":    ["yolo", "object detection", "detr"],
+            "boost":      ["detection", "yolo"],
+        },
+    ]
+
+    for override in _OVERRIDES:
+        # match_all: every inner list must have at least one match
+        all_match = all(
+            any(kw in _p for kw in group)
+            for group in override.get("match_all", [])
+        )
+        # match_any: at least one keyword must match
+        any_match = any(kw in _p for kw in override.get("match_any", []))
+
+        if all_match and any_match:
+            tasks       = [override["task"]]
+            queries     = override["queries"]
+            boost_words = override["boost"]
+            print(f"[search] Task override applied: {override['task']}")
+            break
 
     # ── Pass 1: collect raw candidates from list_models (quick) ─────────────────
     seen_ids: set[str] = set()

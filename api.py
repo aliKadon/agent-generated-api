@@ -758,6 +758,9 @@ def chat(request: ChatRequest, req: Request):
         action_result = execute(route_result, request.message)
         reply         = synthesize(request.message, action_result, mem_ctx, route_action=route_result.get("action", "chat"))
 
+        print(f"  [chat] route={route_result}")
+        print(f"  [chat] action_result={action_result!r}")
+
         history.append({"role": "user",      "content": request.message})
         history.append({"role": "assistant", "content": reply})
         if len(history) > 20:
@@ -765,6 +768,7 @@ def chat(request: ChatRequest, req: Request):
 
         base = str(req.base_url)
         file_url = _extract_file_url(action_result, base) or _extract_file_url(reply, base)
+        print(f"  [chat] file_url={file_url!r}")
         return {"reply": reply, "session_id": request.session_id, "file_url": file_url}
 
     except Exception as e:

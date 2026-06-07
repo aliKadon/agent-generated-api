@@ -155,6 +155,22 @@ def sync_agents_to_db() -> int:
 
 # ── App lifespan ───────────────────────────────────────────────────────────────
 
+def _load_active_state_from_db() -> None:
+    """Restore _ACTIVE_AGENTS from the is_active column on server startup."""
+    global _ACTIVE_AGENTS
+    try:
+        with _db.get_db() as conn:
+            rows = _db.fetchall(conn, "SELECT name, is_active FROM agents")
+        inactive = [r["name"] for r in rows if not r["is_active"]]
+        if inactive:
+            _ACTIVE_AGENTS = {r["name"] for r in rows if r["is_active"]}
+            print(f"[startup] Active agents loaded — {len(_ACTIVE_AGENTS)} active, {len(inactive)} inactive")
+        else:
+            _ACTIVE_AGENTS = None  # all active (default)
+    except Exception as e:
+        print(f"[startup] Could not load active agent state: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _db.init_db()
@@ -163,6 +179,7 @@ async def lifespan(app: FastAPI):
         print(f"[startup] Restored {restored} agent file(s) from database")
     n = sync_agents_to_db()
     print(f"[startup] Database ready — {n} agent(s) synced")
+    _load_active_state_from_db()
     yield
 
 
@@ -611,13 +628,13 @@ class ChatAgentStatus(BaseModel):
 )
 def list_chat_agents():
     with _db.get_db() as conn:
-        rows = _db.fetchall(conn, "SELECT name, description, method FROM agents ORDER BY name")
+        rows = _db.fetchall(conn, "SELECT name, description, method, is_active FROM agents ORDER BY name")
     return [
         {
             "name":        r["name"],
             "description": r["description"],
             "method":      r["method"],
-            "active":      _ACTIVE_AGENTS is None or r["name"] in _ACTIVE_AGENTS,
+            "active":      bool(r["is_active"]),
         }
         for r in rows
     ]
@@ -632,15 +649,15 @@ def activate_chat_agent(name: str):
     ph = "%s" if os.getenv("DATABASE_URL") else "?"
     with _db.get_db() as conn:
         row = _db.fetchone(conn, f"SELECT name FROM agents WHERE name = {ph}", (name,))
-    if not row:
-        raise HTTPException(status_code=404, detail=f"No agent named '{name}' in database.")
+        if not row:
+            raise HTTPException(status_code=404, detail=f"No agent named '{name}' in database.")
+        _db.execute(conn, f"UPDATE agents SET is_active = {ph} WHERE name = {ph}", (True, name))
 
-    if _ACTIVE_AGENTS is None:
-        # All were active — keep all, nothing changes
-        return {"message": f"Agent '{name}' is already active (all agents are active by default)."}
+    if _ACTIVE_AGENTS is not None:
+        _ACTIVE_AGENTS.add(name)
 
-    _ACTIVE_AGENTS.add(name)
-    return {"message": f"Agent '{name}' added to chat.", "active_agents": sorted(_ACTIVE_AGENTS)}
+    active = sorted(_ACTIVE_AGENTS) if _ACTIVE_AGENTS is not None else []
+    return {"message": f"Agent '{name}' activated.", "active_agents": active}
 
 
 @app.delete(
@@ -652,18 +669,19 @@ def deactivate_chat_agent(name: str):
     ph = "%s" if os.getenv("DATABASE_URL") else "?"
     with _db.get_db() as conn:
         row = _db.fetchone(conn, f"SELECT name FROM agents WHERE name = {ph}", (name,))
-    if not row:
-        raise HTTPException(status_code=404, detail=f"No agent named '{name}' in database.")
+        if not row:
+            raise HTTPException(status_code=404, detail=f"No agent named '{name}' in database.")
+        _db.execute(conn, f"UPDATE agents SET is_active = {ph} WHERE name = {ph}", (False, name))
 
     if _ACTIVE_AGENTS is None:
-        # First deactivation — initialise the set with all agents except this one
+        # First deactivation — initialise cache with all agents except this one
         with _db.get_db() as conn:
             all_rows = _db.fetchall(conn, "SELECT name FROM agents")
         _ACTIVE_AGENTS = {r["name"] for r in all_rows} - {name}
     else:
         _ACTIVE_AGENTS.discard(name)
 
-    return {"message": f"Agent '{name}' removed from chat.", "active_agents": sorted(_ACTIVE_AGENTS)}
+    return {"message": f"Agent '{name}' deactivated.", "active_agents": sorted(_ACTIVE_AGENTS)}
 
 
 class ChatRequest(BaseModel):

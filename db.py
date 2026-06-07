@@ -47,8 +47,14 @@ if DATABASE_URL:
                         input_format TEXT,
                         file_path    TEXT,
                         source_code  TEXT,
-                        synced_at    TEXT
+                        synced_at    TEXT,
+                        is_active    BOOLEAN NOT NULL DEFAULT TRUE
                     )
+                """)
+                # Migration: add column to existing tables that predate this field
+                cur.execute("""
+                    ALTER TABLE agents
+                    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE
                 """)
 
     def fetchall(conn, sql: str, params: tuple = ()) -> list[dict]:
@@ -126,9 +132,15 @@ else:
                     input_format TEXT,
                     file_path    TEXT,
                     source_code  TEXT,
-                    synced_at    TEXT
+                    synced_at    TEXT,
+                    is_active    INTEGER NOT NULL DEFAULT 1
                 )
             """)
+            # Migration: add column to existing tables that predate this field
+            try:
+                conn.execute("ALTER TABLE agents ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+            except Exception:
+                pass  # column already exists
 
     def fetchall(conn, sql: str, params: tuple = ()) -> list[dict]:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]

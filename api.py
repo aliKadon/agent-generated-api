@@ -756,7 +756,7 @@ def chat(request: ChatRequest, req: Request):
         mem_ctx       = memory_pass(request.message)
         route_result  = route(request.message)
         action_result = execute(route_result, request.message)
-        reply         = synthesize(request.message, action_result, mem_ctx)
+        reply         = synthesize(request.message, action_result, mem_ctx, route_action=route_result.get("action", "chat"))
 
         history.append({"role": "user",      "content": request.message})
         history.append({"role": "assistant", "content": reply})

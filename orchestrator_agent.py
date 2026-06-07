@@ -423,23 +423,34 @@ def _synth_system_prompt() -> str:
         "You are a friendly, helpful AI assistant backed by specialized agents and tools.\n"
         f"{agents_note}\n"
         "When presenting results, be natural and concise:\n"
-        "- Image results: confirm what was created and mention the saved path.\n"
+        "- Image results: confirm what was created. Do NOT mention file paths — the API returns the URL separately.\n"
         "- Web search: summarize the key points from the results.\n"
         "- Math / weather / time: give the answer directly and clearly.\n"
         "- Essays or long text: give a short intro then present the content.\n"
+        "IMPORTANT: Never invent, assume, or hallucinate an action. "
+        "If no [Result from action] is present in this prompt, NO agent or tool ran — "
+        "do not pretend otherwise.\n"
         "If the user asks for something that none of your available agents or tools can do, "
-        "tell them they can run `python main.py` to build a new specialized agent for that task.\n"
+        "tell them clearly that you don't have that capability right now.\n"
         "Never reveal internal routing JSON or implementation details to the user."
     )
 
 
-def synthesize(user_input: str, action_result: str, mem_ctx: str) -> str:
+def synthesize(user_input: str, action_result: str, mem_ctx: str, route_action: str = "chat") -> str:
     sys_msg = _synth_system_prompt()
     extras  = []
     if mem_ctx:
         extras.append(mem_ctx)
     if action_result:
         extras.append(f"[Result from action]\n{action_result}")
+    elif route_action in ("agent", "tool"):
+        # Router chose an agent/tool but execution returned nothing — something failed
+        extras.append(
+            "[System] The agent/tool was called but returned no result. "
+            "Inform the user that the action could not be completed."
+        )
+    # route_action == "chat" with no action_result means no agent matched — synthesizer
+    # already knows this from agents_note in the system prompt, no extra hint needed
     if extras:
         sys_msg += "\n\n" + "\n\n".join(extras)
 
@@ -467,7 +478,7 @@ def run_orchestrator(user_input: str) -> str:
     route_result  = route(user_input)
     print(f"  [router] {json.dumps(route_result)}")
     action_result = execute(route_result, user_input)
-    reply         = synthesize(user_input, action_result, mem_ctx)
+    reply         = synthesize(user_input, action_result, mem_ctx, route_action=route_result.get("action", "chat"))
 
     HISTORY.append({"role": "user",      "content": user_input})
     HISTORY.append({"role": "assistant", "content": reply})

@@ -233,8 +233,9 @@ def tool_image_saver(image_obj, prompt: str, model_name: str = "unknown") -> str
         from datetime import datetime as _dt
         import os as _os
 
-        # ── output folder ──────────────────────────────────────────────────
-        out_dir = "generated_images"
+        # ── output folder — always resolved to project root regardless of CWD ──
+        _proj_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        out_dir    = _os.path.join(_proj_root, "generated_images")
         _os.makedirs(out_dir, exist_ok=True)
 
         # ── build filename from timestamp + first 40 chars of prompt ───────

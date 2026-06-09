@@ -311,7 +311,29 @@ Rules:
 """
 
 
+_IMAGE_KEYWORDS = [
+    "generate image", "create image", "make image", "draw image",
+    "image of", "picture of", "generate a picture", "create a picture",
+    "draw a", "paint a", "render an image", "generate an image",
+    "صورة", "ارسم", "صمم",  # Arabic equivalents
+]
+
+
 def route(user_input: str) -> dict:
+    # Fast-path: bypass the LLM router for clear image generation requests.
+    # Small LLMs often mis-route these, so check keywords first.
+    user_lower = user_input.lower()
+    if any(kw in user_lower for kw in _IMAGE_KEYWORDS):
+        img_agent = next((a for a in AGENTS if a.get("method") == "text_to_image"), None)
+        if img_agent:
+            print(f"  [router] keyword match → {img_agent['name']}")
+            return {
+                "action": "agent",
+                "target": img_agent["name"],
+                "input":  user_input,
+                "reason": "image keyword match",
+            }
+
     try:
         r = client.chat_completion(
             model=ROUTER_MODEL,

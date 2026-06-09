@@ -161,11 +161,21 @@ def _load_active_state_from_db() -> None:
     global _ACTIVE_AGENTS
     try:
         with _db.get_db() as conn:
-            rows = _db.fetchall(conn, "SELECT name, is_active FROM agents")
+            rows = _db.fetchall(conn, "SELECT name, file_path, is_active FROM agents")
         inactive = [r["name"] for r in rows if not r["is_active"]]
         if inactive:
-            _ACTIVE_AGENTS = {r["name"] for r in rows if r["is_active"]}
-            print(f"[startup] Active agents loaded — {len(_ACTIVE_AGENTS)} active, {len(inactive)} inactive")
+            active_names: set[str] = set()
+            for r in rows:
+                if not r["is_active"]:
+                    continue
+                active_names.add(r["name"])
+                # Also add the file-derived name so discover_agents() matches even if
+                # the DB name includes an "_agent" suffix that the parser strips.
+                if r.get("file_path"):
+                    file_derived = os.path.basename(r["file_path"]).replace("_agent.py", "")
+                    active_names.add(file_derived)
+            _ACTIVE_AGENTS = active_names
+            print(f"[startup] Active agents loaded — {len(_ACTIVE_AGENTS)} names, {len(inactive)} inactive")
         else:
             _ACTIVE_AGENTS = None  # all active (default)
     except Exception as e:
@@ -690,13 +700,16 @@ def activate_chat_agent(name: str):
     global _ACTIVE_AGENTS
     ph = "%s" if os.getenv("DATABASE_URL") else "?"
     with _db.get_db() as conn:
-        row = _db.fetchone(conn, f"SELECT name FROM agents WHERE name = {ph}", (name,))
+        row = _db.fetchone(conn, f"SELECT name, file_path FROM agents WHERE name = {ph}", (name,))
         if not row:
             raise HTTPException(status_code=404, detail=f"No agent named '{name}' in database.")
         _db.execute(conn, f"UPDATE agents SET is_active = {ph} WHERE name = {ph}", (True, name))
 
     if _ACTIVE_AGENTS is not None:
         _ACTIVE_AGENTS.add(name)
+        # Also add the file-derived name to handle DB/discover naming mismatches
+        if row.get("file_path"):
+            _ACTIVE_AGENTS.add(os.path.basename(row["file_path"]).replace("_agent.py", ""))
 
     active = sorted(_ACTIVE_AGENTS) if _ACTIVE_AGENTS is not None else []
     return {"message": f"Agent '{name}' activated.", "active_agents": active}
@@ -752,6 +765,7 @@ def chat(request: ChatRequest, req: Request):
             if _ACTIVE_AGENTS is not None
             else all_agents
         )
+        print(f"  [chat] agents visible to router: {[a['name'] for a in _oa.AGENTS]}")
         history       = _CHAT_SESSIONS.setdefault(request.session_id, [])
         mem_ctx       = memory_pass(request.message)
         route_result  = route(request.message)

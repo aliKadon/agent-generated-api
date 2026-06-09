@@ -429,7 +429,7 @@ def _synth_system_prompt() -> str:
         "- Essays or long text: give a short intro then present the content.\n"
         "IMPORTANT: Never invent, assume, or hallucinate an action. "
         "If no [Result from action] is present in this prompt, NO agent or tool ran — "
-        "do not pretend otherwise.\n"
+        "do not pretend otherwise. Never output fake URLs like example.com or placeholder links.\n"
         "If the user asks for something that none of your available agents or tools can do, "
         "tell them clearly that you don't have that capability right now.\n"
         "Never reveal internal routing JSON or implementation details to the user."
@@ -442,9 +442,12 @@ def _clean_reply(text: str) -> str:
     for prefix in ("[Result from action]", "[System]", "[Memory]", "[Memory context]"):
         if text.startswith(prefix):
             text = text[len(prefix):].lstrip("\n: ")
-    # Strip hallucinated markdown image links that point to external/fake URLs
-    # (real file URLs come via the file_url field, not embedded in reply text)
+    # Strip hallucinated "[Image URL: https://...]" text blocks
+    text = re.sub(r'\[Image URL[:\s]+https?://(?!agent-generated-api)[^\]]+\]', '', text)
+    # Strip hallucinated markdown image/link syntax pointing to external URLs
+    # (real file URLs are delivered via the file_url field, not embedded in the reply)
     text = re.sub(r'!\[[^\]]*\]\(https?://(?!agent-generated-api)[^\)]+\)', '', text)
+    text = re.sub(r'\[[^\]]*\]\(https?://(?!agent-generated-api)[^\)]+\)', '', text)
     return text.strip()
 
 
@@ -463,6 +466,13 @@ def synthesize(user_input: str, action_result: str, mem_ctx: str, route_action: 
         context_parts.append(
             "Note: the agent/tool was called but returned no result. "
             "Tell the user the action could not be completed."
+        )
+    else:
+        # route_action == "chat": no agent or tool ran at all
+        context_parts.append(
+            "[System] No agent or tool was invoked. "
+            "Do NOT invent, simulate, or pretend to perform any action (especially image generation). "
+            "Either answer from general knowledge or tell the user this capability is not available."
         )
 
     final_user_msg = "\n\n".join(context_parts + [user_input]) if context_parts else user_input

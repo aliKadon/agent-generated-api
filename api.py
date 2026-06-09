@@ -797,12 +797,21 @@ def chat(request: ChatRequest, req: Request):
         import orchestrator_agent as _oa
         from orchestrator_agent import discover_agents, memory_pass, route, execute, synthesize
 
-        all_agents    = discover_agents()
-        active_agents = (
-            [a for a in all_agents if a["name"] in _ACTIVE_AGENTS]
-            if _ACTIVE_AGENTS is not None
-            else all_agents
-        )
+        all_agents = discover_agents()
+
+        # Always read active status fresh from the DB — never from the in-memory
+        # _ACTIVE_AGENTS set, which can be stale due to naming mismatches between
+        # DB names and file-derived names.
+        with _db.get_db() as _conn:
+            _active_rows = _db.fetchall(_conn, "SELECT name, file_path FROM agents WHERE is_active = TRUE")
+        _active_names: set[str] = set()
+        for _r in _active_rows:
+            _active_names.add(_r["name"])
+            if _r.get("file_path"):
+                _active_names.add(os.path.basename(_r["file_path"]).replace("_agent.py", ""))
+
+        active_agents = [a for a in all_agents if a["name"] in _active_names]
+
         _oa.AGENTS     = active_agents   # active only — used by fast-path + execute
         _oa.ALL_AGENTS = all_agents      # all agents — shown in router prompt with [INACTIVE] tags
         print(f"  [chat] active={[a['name'] for a in active_agents]}  "

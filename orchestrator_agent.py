@@ -37,8 +37,9 @@ client = InferenceClient(provider=ROUTER_PROVIDER, api_key=HF_TOKEN)
 
 # ── Agent auto-discovery ───────────────────────────────────────────────────────
 
-_ROOT  = os.path.dirname(os.path.abspath(__file__))
-AGENTS: list[dict] = []   # populated dynamically by discover_agents()
+_ROOT      = os.path.dirname(os.path.abspath(__file__))
+AGENTS:     list[dict] = []   # active agents only — used for fast-path routing + execution
+ALL_AGENTS: list[dict] = []   # all agents including inactive — shown in router prompt
 
 # Maps HF method names to a human-readable input format hint used by the router.
 _METHOD_INPUT_FORMAT = {
@@ -275,11 +276,21 @@ def call_agent(agent_name: str, user_input: str) -> str:
 # ── Router ─────────────────────────────────────────────────────────────────────
 
 def _router_system_prompt() -> str:
-    if AGENTS:
-        agents_block = "\n".join(
-            f'  - {a["name"]}: {a["description"]}  [input format: {a["input_format"]}]'
-            for a in AGENTS
-        )
+    # Use ALL_AGENTS so the router knows every agent that exists, including
+    # inactive ones — it marks them clearly so it can still pick the right
+    # capability even if it's inactive.  The caller checks after routing.
+    source = ALL_AGENTS if ALL_AGENTS else AGENTS
+    active_names = {a["name"] for a in AGENTS}
+
+    if source:
+        lines = []
+        for a in source:
+            status = "" if a["name"] in active_names else "  [INACTIVE]"
+            lines.append(
+                f'  - {a["name"]}: {a["description"]}  '
+                f'[input format: {a["input_format"]}]{status}'
+            )
+        agents_block = "\n".join(lines)
     else:
         agents_block = "  (none — no agent files found)"
 
@@ -301,7 +312,7 @@ Return ONLY valid JSON — no markdown, no extra text:
 }}
 
 Rules:
-- Use "agent" only when the request clearly matches a sub-agent's specialty.
+- Use "agent" only when the request clearly matches a sub-agent's specialty, even if it is [INACTIVE].
 - Use "tool" for web search, math, date/time, weather, translation, or PDF export.
 - Use "chat" for everything else — greetings, opinions, general questions, or if no agent fits.
 - If no agent is listed for what the user wants, set action="chat".
@@ -311,28 +322,50 @@ Rules:
 """
 
 
-_IMAGE_KEYWORDS = [
-    "generate image", "create image", "make image", "draw image",
-    "image of", "picture of", "generate a picture", "create a picture",
-    "draw a", "paint a", "render an image", "generate an image",
-    "صورة", "ارسم", "صمم",  # Arabic equivalents
-]
+# Maps HF method → trigger keywords for fast-path routing.
+# Must stay in sync with _CAPABILITY_MAP in api.py.
+_METHOD_KEYWORDS: dict[str, list[str]] = {
+    "text_to_image": [
+        "generate image", "create image", "make image", "draw image",
+        "image of", "picture of", "generate a picture", "create a picture",
+        "draw a", "paint a", "render an image", "generate an image",
+        "صورة", "ارسم", "صمم",
+    ],
+    "text_to_video": [
+        "generate video", "create video", "make video", "video of",
+        "animate", "video clip", "short video", "render a video",
+        "generate a video", "create a video",
+        "فيديو", "انشئ فيديو",
+    ],
+    "image_to_image": [
+        "edit image", "edit this image", "modify image", "change the image",
+        "update the image", "transform image",
+    ],
+    "automatic_speech_recognition": [
+        "transcribe", "speech to text", "convert audio", "audio to text",
+        "recognize speech", "transcription",
+    ],
+    "summarization": [
+        "summarize", "summarise", "give me a summary", "tldr",
+    ],
+}
 
 
 def route(user_input: str) -> dict:
-    # Fast-path: bypass the LLM router for clear image generation requests.
-    # Small LLMs often mis-route these, so check keywords first.
+    # Fast-path: bypass the LLM router when the request clearly targets a specific
+    # method. Small LLMs often mis-route these, so check keywords first.
     user_lower = user_input.lower()
-    if any(kw in user_lower for kw in _IMAGE_KEYWORDS):
-        img_agent = next((a for a in AGENTS if a.get("method") == "text_to_image"), None)
-        if img_agent:
-            print(f"  [router] keyword match → {img_agent['name']}")
-            return {
-                "action": "agent",
-                "target": img_agent["name"],
-                "input":  user_input,
-                "reason": "image keyword match",
-            }
+    for method, keywords in _METHOD_KEYWORDS.items():
+        if any(kw in user_lower for kw in keywords):
+            matched = next((a for a in AGENTS if a.get("method") == method), None)
+            if matched:
+                print(f"  [router] keyword match ({method}) → {matched['name']}")
+                return {
+                    "action": "agent",
+                    "target": matched["name"],
+                    "input":  user_input,
+                    "reason": f"{method} keyword match",
+                }
 
     try:
         r = client.chat_completion(

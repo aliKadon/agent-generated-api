@@ -140,6 +140,15 @@ def sync_agents_to_db() -> int:
             found_metas.append(meta)
 
     with _db.get_db() as conn:
+        # Snapshot is_active per file_path BEFORE any deletes/inserts so that a
+        # name-change (e.g. "generating_image_agent" → "generating_image") does not
+        # silently reset an inactive agent back to active.
+        existing_active: dict[str, bool] = {
+            r["file_path"]: bool(r["is_active"])
+            for r in _db.fetchall(conn, "SELECT file_path, is_active FROM agents")
+            if r.get("file_path")
+        }
+
         if found_names:
             placeholders = ",".join(["%s" if os.getenv("DATABASE_URL") else "?"] * len(found_names))
             _db.execute(conn, f"DELETE FROM agents WHERE name NOT IN ({placeholders})", tuple(found_names))
@@ -148,6 +157,10 @@ def sync_agents_to_db() -> int:
 
         for meta in found_metas:
             _db.upsert_agent(conn, meta, now)
+            # Restore is_active if this file was already tracked under a different name
+            if meta["file_path"] in existing_active and not existing_active[meta["file_path"]]:
+                ph = "%s" if os.getenv("DATABASE_URL") else "?"
+                _db.execute(conn, f"UPDATE agents SET is_active = {ph} WHERE name = {ph}", (False, meta["name"]))
 
         total = _db.count_agents(conn)
 
@@ -224,6 +237,31 @@ _FILE_URL_PATTERNS = [
     # Any other known file extension mentioned in reply
     (re.compile(r'saved[:\s]+([\w\-./\\]+\.(?:mp3|mp4|wav|csv|xlsx|zip))', re.I), "docs"),
 ]
+
+
+# Human-readable labels for each HF method — used only in inactive-agent messages.
+_METHOD_LABELS: dict[str, str] = {
+    "text_to_image":               "image generation",
+    "text_to_video":               "video generation",
+    "image_to_image":              "image editing",
+    "automatic_speech_recognition":"speech-to-text",
+    "text_to_speech":              "text-to-speech",
+    "summarization":               "summarization",
+    "question_answering":          "question answering",
+    "text_generation":             "text generation",
+    "chat_completion":             "chat",
+}
+
+
+def _inactive_agent_reply(agent: dict) -> str:
+    """Return a helpful message when the router picked an agent that is inactive."""
+    name   = agent["name"]
+    label  = _METHOD_LABELS.get(agent.get("method", ""), agent.get("method", "this capability"))
+    return (
+        f'I have a {label} agent ("{name}") but it is currently inactive. '
+        f'To use it, activate it: POST /chat/agents/{name} '
+        f'— or create a new {label} agent via POST /agents/generate/start'
+    )
 
 
 def _extract_file_url(reply: str, base_url: str) -> str | None:
@@ -759,16 +797,34 @@ def chat(request: ChatRequest, req: Request):
         import orchestrator_agent as _oa
         from orchestrator_agent import discover_agents, memory_pass, route, execute, synthesize
 
-        all_agents = discover_agents()
-        _oa.AGENTS  = (
+        all_agents    = discover_agents()
+        active_agents = (
             [a for a in all_agents if a["name"] in _ACTIVE_AGENTS]
             if _ACTIVE_AGENTS is not None
             else all_agents
         )
-        print(f"  [chat] agents visible to router: {[a['name'] for a in _oa.AGENTS]}")
+        _oa.AGENTS     = active_agents   # active only — used by fast-path + execute
+        _oa.ALL_AGENTS = all_agents      # all agents — shown in router prompt with [INACTIVE] tags
+        print(f"  [chat] active={[a['name'] for a in active_agents]}  "
+              f"all={[a['name'] for a in all_agents]}")
+
         history       = _CHAT_SESSIONS.setdefault(request.session_id, [])
         mem_ctx       = memory_pass(request.message)
         route_result  = route(request.message)
+
+        # If the router picked an inactive agent, return a helpful message immediately
+        # without trying to execute it.  This is fully dynamic — no keyword lists needed.
+        if route_result.get("action") == "agent":
+            target       = route_result.get("target")
+            active_names = {a["name"] for a in active_agents}
+            if target and target not in active_names:
+                inactive = next((a for a in all_agents if a["name"] == target), None)
+                if inactive:
+                    reply = _inactive_agent_reply(inactive)
+                    history.append({"role": "user",      "content": request.message})
+                    history.append({"role": "assistant", "content": reply})
+                    return {"reply": reply, "session_id": request.session_id, "file_url": None}
+
         action_result = execute(route_result, request.message)
         reply         = synthesize(request.message, action_result, mem_ctx, route_action=route_result.get("action", "chat"))
 

@@ -503,6 +503,11 @@ def _clean_reply(text: str) -> str:
     # (real file URLs are delivered via the file_url field, not embedded in the reply)
     text = re.sub(r'!\[[^\]]*\]\(https?://(?!agent-generated-api)[^\)]+\)', '', text)
     text = re.sub(r'\[[^\]]*\]\(https?://(?!agent-generated-api)[^\)]+\)', '', text)
+    # Strip hallucinated file-save lines — real paths come through action_result,
+    # the synthesizer must never echo them (it's told not to, but small models ignore that).
+    text = re.sub(r'(?i)(Image|File|PDF|Output)\s+saved[:\s]+[^\n]+\.(png|jpg|jpeg|webp|gif|pdf|mp3|mp4|wav)', '', text)
+    text = re.sub(r'generated_images[/\\][\w\-. ]+\.(?:png|jpg|jpeg|webp|gif)', '', text, flags=re.I)
+    text = re.sub(r'generated_files[/\\][\w\-. ]+\.(?:pdf|mp3|mp4|wav|csv|zip)', '', text, flags=re.I)
     return text.strip()
 
 

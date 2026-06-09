@@ -846,7 +846,10 @@ def chat(request: ChatRequest, req: Request):
             history[:] = history[-20:]
 
         base = str(req.base_url)
-        file_url = _extract_file_url(action_result, base) or _extract_file_url(reply, base)
+        # Only extract file URL from action_result (the real agent output).
+        # Checking reply too causes false positives when the synthesizer
+        # hallucinates "Image saved: generated_images/..." in its text.
+        file_url = _extract_file_url(action_result, base)
         print(f"  [chat] file_url={file_url!r}")
         return {"reply": reply, "session_id": request.session_id, "file_url": file_url}
 

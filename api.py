@@ -143,11 +143,14 @@ def sync_agents_to_db() -> int:
         # Snapshot is_active per file_path BEFORE any deletes/inserts so that a
         # name-change (e.g. "generating_image_agent" → "generating_image") does not
         # silently reset an inactive agent back to active.
-        existing_active: dict[str, bool] = {
-            r["file_path"]: bool(r["is_active"])
-            for r in _db.fetchall(conn, "SELECT file_path, is_active FROM agents")
-            if r.get("file_path")
-        }
+        # "Inactive wins": if ANY record for a given file_path has is_active=FALSE,
+        # the whole file is treated as inactive (handles duplicate name records).
+        existing_active: dict[str, bool] = {}
+        for _r in _db.fetchall(conn, "SELECT file_path, is_active FROM agents"):
+            _fp = _r.get("file_path")
+            if not _fp:
+                continue
+            existing_active[_fp] = existing_active.get(_fp, True) and bool(_r["is_active"])
 
         if found_names:
             placeholders = ",".join(["%s" if os.getenv("DATABASE_URL") else "?"] * len(found_names))
@@ -155,12 +158,17 @@ def sync_agents_to_db() -> int:
         else:
             _db.execute(conn, "DELETE FROM agents")
 
+        ph = "%s" if os.getenv("DATABASE_URL") else "?"
         for meta in found_metas:
             _db.upsert_agent(conn, meta, now)
             # Restore is_active if this file was already tracked under a different name
             if meta["file_path"] in existing_active and not existing_active[meta["file_path"]]:
-                ph = "%s" if os.getenv("DATABASE_URL") else "?"
                 _db.execute(conn, f"UPDATE agents SET is_active = {ph} WHERE name = {ph}", (False, meta["name"]))
+            # Remove any duplicate records with the same file_path but a different name
+            # (leftover from a previous naming scheme, e.g. "generating_image_agent" vs "generating_image")
+            _db.execute(conn,
+                f"DELETE FROM agents WHERE file_path = {ph} AND name != {ph}",
+                (meta["file_path"], meta["name"]))
 
         total = _db.count_agents(conn)
 
@@ -799,18 +807,21 @@ def chat(request: ChatRequest, req: Request):
 
         all_agents = discover_agents()
 
-        # Always read active status fresh from the DB — never from the in-memory
-        # _ACTIVE_AGENTS set, which can be stale due to naming mismatches between
-        # DB names and file-derived names.
+        # Build the set of INACTIVE file_paths from the DB.
+        # Using file_path (not name) means the check is immune to naming mismatches
+        # between DB records and discover_agents() output (e.g. "generating_image_agent"
+        # in DB vs "generating_image" from the file scanner).
+        # "Inactive wins": if ANY DB record for a given file_path has is_active=FALSE,
+        # the file is treated as inactive — this handles duplicate records correctly.
         with _db.get_db() as _conn:
-            _active_rows = _db.fetchall(_conn, "SELECT name, file_path FROM agents WHERE is_active = TRUE")
-        _active_names: set[str] = set()
-        for _r in _active_rows:
-            _active_names.add(_r["name"])
-            if _r.get("file_path"):
-                _active_names.add(os.path.basename(_r["file_path"]).replace("_agent.py", ""))
+            _all_db_rows = _db.fetchall(_conn, "SELECT file_path, is_active FROM agents")
+        _inactive_fps: set[str] = {
+            r["file_path"] for r in _all_db_rows
+            if r.get("file_path") and not r["is_active"]
+        }
+        print(f"  [chat] inactive_fps={_inactive_fps}")
 
-        active_agents = [a for a in all_agents if a["name"] in _active_names]
+        active_agents = [a for a in all_agents if a.get("file") not in _inactive_fps]
 
         _oa.AGENTS     = active_agents   # active only — used by fast-path + execute
         _oa.ALL_AGENTS = all_agents      # all agents — shown in router prompt with [INACTIVE] tags

@@ -625,6 +625,11 @@ async def generate_start_stream(request: GenerateStartRequest):
                 "message":    f"Found {len(usable_models)} models ready to use!",
                 "session_id": session_id,
                 "step":       "select_model",
+                "_debug": {
+                    "total_candidates": len(results),
+                    "with_provider":    sum(1 for m in results if m.has_provider),
+                    "shown":            len(usable_models),
+                },
                 "models": [
                     {
                         "index":             i + 1,
@@ -633,6 +638,7 @@ async def generate_start_stream(request: GenerateStartRequest):
                         "method":            m.inferred_method,
                         "has_chat_template": m.has_chat_template,
                         "gated":             m.gated,
+                        "license":           m.license,
                         "usable":            m.provider is not None,
                     }
                     for i, m in enumerate(usable_models)

@@ -276,20 +276,14 @@ def call_agent(agent_name: str, user_input: str) -> str:
 # ── Router ─────────────────────────────────────────────────────────────────────
 
 def _router_system_prompt() -> str:
-    # Use ALL_AGENTS so the router knows every agent that exists, including
-    # inactive ones — it marks them clearly so it can still pick the right
-    # capability even if it's inactive.  The caller checks after routing.
-    source = ALL_AGENTS if ALL_AGENTS else AGENTS
-    active_names = {a["name"] for a in AGENTS}
-
-    if source:
-        lines = []
-        for a in source:
-            status = "" if a["name"] in active_names else "  [INACTIVE]"
-            lines.append(
-                f'  - {a["name"]}: {a["description"]}  '
-                f'[input format: {a["input_format"]}]{status}'
-            )
+    # Only expose ACTIVE agents to the router — inactive agents must never be
+    # selected for execution.  Routing to an inactive agent is treated as "chat"
+    # and the synthesizer will tell the user it's unavailable.
+    if AGENTS:
+        lines = [
+            f'  - {a["name"]}: {a["description"]}  [input format: {a["input_format"]}]'
+            for a in AGENTS
+        ]
         agents_block = "\n".join(lines)
     else:
         agents_block = "  (none — no agent files found)"
@@ -312,7 +306,7 @@ Return ONLY valid JSON — no markdown, no extra text:
 }}
 
 Rules:
-- Use "agent" only when the request clearly matches a sub-agent's specialty, even if it is [INACTIVE].
+- Use "agent" only when the request clearly matches a sub-agent's specialty.
 - Use "tool" for web search, math, date/time, weather, translation, or PDF export.
 - Use "chat" for everything else — greetings, opinions, general questions, or if no agent fits.
 - If no agent is listed for what the user wants, set action="chat".
@@ -474,9 +468,22 @@ def _synth_system_prompt() -> str:
         agents_note = f"You currently have these agents available: {agent_list}."
     else:
         agents_note = "You currently have NO specialized agents available."
+
+    inactive_note = ""
+    if ALL_AGENTS:
+        active_names = {a["name"] for a in AGENTS}
+        disabled = [a["name"] for a in ALL_AGENTS if a["name"] not in active_names]
+        if disabled:
+            inactive_note = (
+                f" The following agents are currently DISABLED and must NOT be used: "
+                f"{', '.join(disabled)}. "
+                "If the user asks for their capabilities, tell them that agent is currently inactive "
+                "and they can activate it via POST /chat/agents/<name>."
+            )
+
     return (
         "You are a friendly, helpful AI assistant backed by specialized agents and tools.\n"
-        f"{agents_note}\n"
+        f"{agents_note}{inactive_note}\n"
         "When presenting results, be natural and concise:\n"
         "- Image results: confirm what was created. Do NOT mention file paths — the API returns the URL separately.\n"
         "- Web search: summarize the key points from the results.\n"

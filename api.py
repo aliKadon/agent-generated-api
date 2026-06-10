@@ -832,8 +832,8 @@ def chat(request: ChatRequest, req: Request):
         mem_ctx       = memory_pass(request.message)
         route_result  = route(request.message)
 
-        # If the router picked an inactive agent, return a helpful message immediately
-        # without trying to execute it.  This is fully dynamic — no keyword lists needed.
+        # Safety net: if the router somehow picked an inactive or unknown agent,
+        # block it here before execute() is called.
         if route_result.get("action") == "agent":
             target       = route_result.get("target")
             active_names = {a["name"] for a in active_agents}
@@ -844,6 +844,9 @@ def chat(request: ChatRequest, req: Request):
                     history.append({"role": "user",      "content": request.message})
                     history.append({"role": "assistant", "content": reply})
                     return {"reply": reply, "session_id": request.session_id, "file_url": None}
+                # Unknown agent name — downgrade to chat so execute() returns nothing
+                route_result = {"action": "chat", "target": None, "input": None,
+                                "reason": "unknown agent target"}
 
         action_result = execute(route_result, request.message)
         reply         = synthesize(request.message, action_result, mem_ctx, route_action=route_result.get("action", "chat"))

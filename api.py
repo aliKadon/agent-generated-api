@@ -960,7 +960,13 @@ def chat(request: ChatRequest, req: Request):
 
         history       = _CHAT_SESSIONS.setdefault(request.session_id, [])
         mem_ctx       = memory_pass(request.message)
-        route_result  = route(request.message)
+        # When a file_path is provided, tell the router so it can pick a file-input
+        # agent instead of falling back to chat because "no file path in message".
+        _router_msg = (
+            f"[file_path: {request.file_path}] {request.message}"
+            if request.file_path else request.message
+        )
+        route_result  = route(_router_msg)
 
         # Safety net: if the router somehow picked an inactive or unknown agent,
         # block it here before execute() is called.

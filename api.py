@@ -554,6 +554,7 @@ def generate_start(request: GenerateStartRequest):
                 "method":            m.inferred_method,
                 "has_chat_template": m.has_chat_template,
                 "gated":             m.gated,
+                "usable":            m.provider is not None,
             }
             for i, m in enumerate(usable_models)
         ],
@@ -631,6 +632,7 @@ async def generate_start_stream(request: GenerateStartRequest):
                         "method":            m.inferred_method,
                         "has_chat_template": m.has_chat_template,
                         "gated":             m.gated,
+                        "usable":            m.provider is not None,
                     }
                     for i, m in enumerate(usable_models)
                 ],

@@ -35,7 +35,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -230,6 +230,49 @@ os.makedirs(_GENERATED_FILES,  exist_ok=True)
 
 app.mount("/files/images", StaticFiles(directory=_GENERATED_IMAGES), name="gen_images")
 app.mount("/files/docs",   StaticFiles(directory=_GENERATED_FILES),  name="gen_docs")
+
+
+@app.post(
+    "/files/upload",
+    summary="Upload a file (image or document) to use as input for a chat agent",
+    description=(
+        "Saves the file on the server and returns a `file_path` you can pass "
+        "directly in `POST /chat` to agents that need a file input (e.g. the "
+        "image editor).  Images go to `generated_images/`, everything else to "
+        "`generated_files/`."
+    ),
+)
+async def upload_file(file: UploadFile = File(...), req: Request = None):
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+    original    = file.filename or "upload"
+    ext         = os.path.splitext(original)[1].lower()
+    safe_name   = re.sub(r"[^\w\-.]", "_", original)
+    uid         = uuid.uuid4().hex[:8]
+    filename    = f"{uid}_{safe_name}"
+
+    if ext in _IMAGE_EXTS:
+        dest_dir  = _GENERATED_IMAGES
+        url_sub   = "images"
+        rel_path  = f"generated_images/{filename}"
+    else:
+        dest_dir  = _GENERATED_FILES
+        url_sub   = "docs"
+        rel_path  = f"generated_files/{filename}"
+
+    full_path = os.path.join(dest_dir, filename)
+    content   = await file.read()
+    with open(full_path, "wb") as f:
+        f.write(content)
+
+    base     = str(req.base_url) if req else ""
+    file_url = f"{base}files/{url_sub}/{filename}"
+    return {
+        "file_name": filename,
+        "file_path": rel_path,   # pass this as "file_path" in POST /chat
+        "file_url":  file_url,
+        "size_bytes": len(content),
+    }
+
 
 # Patterns to extract a generated file path from an agent's reply string.
 # Each entry: (compiled regex, url sub-path)
@@ -818,6 +861,7 @@ def deactivate_chat_agent(name: str):
 class ChatRequest(BaseModel):
     message:    str
     session_id: str = "default"
+    file_path:  str | None = None  # server path returned by POST /files/upload
 
 
 class ChatResponse(BaseModel):
@@ -877,6 +921,43 @@ def chat(request: ChatRequest, req: Request):
                 # Unknown agent name — downgrade to chat so execute() returns nothing
                 route_result = {"action": "chat", "target": None, "input": None,
                                 "reason": "unknown agent target"}
+
+        # File-input injection: agents whose input_format contains "|||" expect
+        # a file path prepended to the text, e.g. "path/to/img.png|||edit prompt".
+        # The fast-path never fires for these agents (removed from _METHOD_KEYWORDS),
+        # so the LLM router correctly detected intent.  Here we either:
+        #   (a) inject the uploaded file path when file_path was provided, or
+        #   (b) return a clear error when the agent needs a file but none was given.
+        if route_result.get("action") == "agent":
+            _target     = route_result.get("target")
+            _target_cfg = next((a for a in active_agents if a["name"] == _target), None)
+            if _target_cfg and "|||" in _target_cfg.get("input_format", ""):
+                if request.file_path:
+                    # Validate the path stays inside the allowed upload directories
+                    _abs = os.path.normpath(os.path.join(_ROOT, request.file_path))
+                    if not (_abs.startswith(_GENERATED_IMAGES) or _abs.startswith(_GENERATED_FILES)):
+                        raise HTTPException(status_code=400,
+                            detail="file_path must reference a file uploaded via POST /files/upload")
+                    if not os.path.exists(_abs):
+                        raise HTTPException(status_code=404,
+                            detail=f"Uploaded file not found on server: {request.file_path}")
+                    route_result = {**route_result,
+                                    "input": f"{request.file_path}|||{request.message}"}
+                elif "|||" not in request.message:
+                    # No file provided and message isn't already formatted — guard here
+                    # instead of letting the agent fail with a cryptic path error.
+                    reply = (
+                        f'The "{_target}" agent requires an input file.\n'
+                        f'Step 1 — upload your file:\n'
+                        f'  POST /files/upload  (form-data key: "file")\n'
+                        f'Step 2 — include the returned "file_path" in your chat request:\n'
+                        f'  {{"message": "{request.message}", '
+                        f'"file_path": "<value from upload response>", '
+                        f'"session_id": "{request.session_id}"}}'
+                    )
+                    history.append({"role": "user",      "content": request.message})
+                    history.append({"role": "assistant", "content": reply})
+                    return {"reply": reply, "session_id": request.session_id, "file_url": None}
 
         action_result = execute(route_result, request.message)
         reply         = synthesize(request.message, action_result, mem_ctx, route_action=route_result.get("action", "chat"))

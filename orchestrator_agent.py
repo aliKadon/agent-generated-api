@@ -331,10 +331,11 @@ _METHOD_KEYWORDS: dict[str, list[str]] = {
         "generate a video", "create a video",
         "فيديو", "انشئ فيديو",
     ],
-    "image_to_image": [
-        "edit image", "edit this image", "modify image", "change the image",
-        "update the image", "transform image",
-    ],
+    # image_to_image is intentionally excluded from the fast-path.
+    # It needs a file path injected as "path|||description" before the agent
+    # can run — only the /chat endpoint (which reads file_path from the request)
+    # can do that.  The LLM router handles intent detection; api.py handles
+    # the input formatting and missing-file guard.
     "automatic_speech_recognition": [
         "transcribe", "speech to text", "convert audio", "audio to text",
         "recognize speech", "transcription",

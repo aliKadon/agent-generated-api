@@ -526,22 +526,21 @@ def generate_start(request: GenerateStartRequest):
             )
         raise HTTPException(status_code=500, detail=f"Model search failed: {err}")
 
-    # Prefer models that are both free AND have an active inference provider.
-    # Fall back to any free model if HuggingFace has restricted provider access
-    # (common for text-generation — image models are usually still available).
-    free_models = [m for m in results if m.is_free and m.has_provider][:15]
+    # Prefer models with an active inference provider.
+    # Fall back to provider-less models if none are available, with a warning.
+    usable_models = [m for m in results if m.has_provider][:15]
     no_provider_fallback = False
-    if not free_models:
-        free_models = [m for m in results if m.is_free][:15]
+    if not usable_models:
+        usable_models = results[:15]
         no_provider_fallback = True
-    if not free_models:
-        raise HTTPException(status_code=404, detail="No free models found. Try a different description.")
+    if not usable_models:
+        raise HTTPException(status_code=404, detail="No models found. Try a different description.")
 
     session_id = uuid.uuid4().hex[:10]
     _GEN_SESSIONS[session_id] = {
         "step":        "select_model",
         "description": request.description,
-        "free_models": free_models,
+        "free_models": usable_models,
     }
 
     response = {
@@ -554,8 +553,9 @@ def generate_start(request: GenerateStartRequest):
                 "provider":          m.provider,
                 "method":            m.inferred_method,
                 "has_chat_template": m.has_chat_template,
+                "gated":             m.gated,
             }
-            for i, m in enumerate(free_models)
+            for i, m in enumerate(usable_models)
         ],
         "message": "Pick a model using its index number, then call /agents/generate/continue.",
     }
@@ -597,16 +597,16 @@ async def generate_start_stream(request: GenerateStartRequest):
 
         try:
             results, _ = search_best_llms(request.description, progress_cb=cb)
-            free_models = [m for m in results if m.is_free and m.has_provider][:15]
+            usable_models = [m for m in results if m.has_provider][:15]
             no_provider_fallback = False
-            if not free_models:
-                free_models = [m for m in results if m.is_free][:15]
+            if not usable_models:
+                usable_models = results[:15]
                 no_provider_fallback = True
 
-            if not free_models:
+            if not usable_models:
                 progress_q.put({
                     "status":  "error",
-                    "message": "No free models found. Try a different description.",
+                    "message": "No models found. Try a different description.",
                     "code":    404,
                 })
                 return
@@ -615,12 +615,12 @@ async def generate_start_stream(request: GenerateStartRequest):
             _GEN_SESSIONS[session_id] = {
                 "step":        "select_model",
                 "description": request.description,
-                "free_models": free_models,
+                "free_models": usable_models,
             }
 
             done_event = {
                 "status":     "done",
-                "message":    f"Found {len(free_models)} models ready to use!",
+                "message":    f"Found {len(usable_models)} models ready to use!",
                 "session_id": session_id,
                 "step":       "select_model",
                 "models": [
@@ -630,8 +630,9 @@ async def generate_start_stream(request: GenerateStartRequest):
                         "provider":          m.provider,
                         "method":            m.inferred_method,
                         "has_chat_template": m.has_chat_template,
+                        "gated":             m.gated,
                     }
-                    for i, m in enumerate(free_models)
+                    for i, m in enumerate(usable_models)
                 ],
             }
             if no_provider_fallback:
@@ -709,6 +710,32 @@ def generate_continue(request: GenerateContinueRequest):
             raise HTTPException(status_code=422, detail=f"model_choice must be 1–{len(free_models)}.")
 
         model = free_models[request.model_choice - 1]
+
+        # ── Gated model: verify the HF_TOKEN has agreed to the license ──────────
+        if model.gated:
+            from huggingface_hub import HfApi as _HfApi
+            try:
+                from huggingface_hub.utils import GatedRepoError
+            except ImportError:
+                GatedRepoError = Exception  # older huggingface_hub versions
+
+            try:
+                _HfApi(token=os.getenv("HF_TOKEN")).model_info(model.name)
+            except GatedRepoError:
+                return {
+                    "step":          "requires_agreement",
+                    "session_id":    request.session_id,
+                    "model":         model.name,
+                    "agreement_url": f"https://huggingface.co/{model.name}",
+                    "message": (
+                        f"'{model.name}' requires a one-time license agreement. "
+                        f"Open the agreement_url, click 'Agree and access repository' "
+                        f"using the HuggingFace account that owns your HF_TOKEN, "
+                        f"then call this endpoint again with the same session_id and model_choice to continue."
+                    ),
+                }
+            except Exception:
+                pass  # any other error (network, etc.) — let the flow continue and fail naturally
 
         from services.planner import generate_agent_prompt_plan
         from services.generator import decide_tools

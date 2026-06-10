@@ -616,15 +616,15 @@ def search_best_llms(
                     if w.lower() in mid.lower() or w.lower() in " ".join(tags).lower():
                         score += SCORE_BOOST_KEYWORD
 
-                is_free = not getattr(model, "gated", False)
-                raw.append((mid, task, score, is_free))
+                gated = bool(getattr(model, "gated", False))
+                raw.append((mid, task, score, gated))
 
     # ── Pass 2: fetch full provider/method info per model (the slow part) ────────
     total = len(raw)
     emit("analyzing", f"Found {total} candidates. Checking provider availability...")
 
     suggestions: list[ModelSuggestion] = []
-    for i, (mid, task, score, is_free) in enumerate(raw):
+    for i, (mid, task, score, gated) in enumerate(raw):
         if i % 5 == 0:
             emit("progress", f"Checking model {i + 1}/{total}...")
         mi = get_model_full_info(api, mid, task)
@@ -632,7 +632,7 @@ def search_best_llms(
             name=mid,
             url=HF_MODEL_URL + mid,
             score=score,
-            is_free=is_free,
+            is_free=True,   # HF serverless inference is free with HF_TOKEN; gated ≠ paid
             has_provider=mi["provider"] is not None,
             provider=mi["provider"],
             supported_task=mi["supported_task"],
@@ -640,8 +640,10 @@ def search_best_llms(
             has_chat_template=mi["has_chat_template"],
             pipeline_tag=mi["pipeline_tag"],
             tags=mi["tags"],
+            gated=gated,
         ))
 
     emit("ranking", f"Ranking {len(suggestions)} models by score and availability...")
-    suggestions.sort(key=lambda x: (not x.is_free, not x.has_provider, -x.score))
+    # Sort: provider first, then ungated before gated, then by score
+    suggestions.sort(key=lambda x: (not x.has_provider, x.gated, -x.score))
     return suggestions, tasks[0]

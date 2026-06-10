@@ -18,3 +18,4 @@ class ModelSuggestion:
     has_chat_template: bool = False
     pipeline_tag: str | None = None
     tags: list = field(default_factory=list)
+    gated: bool = False

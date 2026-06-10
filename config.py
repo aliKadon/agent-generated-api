@@ -115,6 +115,25 @@ HISTORY_MAX_MESSAGES: int  = 20   # kept per session in generated agents
 
 MODEL_SEARCH_LIMIT: int = 200     # max models fetched per HF search query
 
+# When searching for a specific task, many capable models are tagged with a
+# different primary pipeline_tag on HuggingFace (e.g. FLUX is "text-to-image"
+# but supports image-to-image via inference providers). These supplemental tasks
+# are searched in addition to the primary task. Results are only kept if the
+# provider mapping explicitly reports the primary task.
+SUPPLEMENTAL_SEARCH_TASKS: dict = {
+    "image-to-image":              ["text-to-image"],
+    "image-to-text":               ["text-generation"],
+    "visual-question-answering":   ["text-generation", "image-to-text"],
+    "document-question-answering": ["text-generation", "image-to-text"],
+    "text-to-video":               ["text-to-image"],
+    "text-to-speech":              ["audio-to-audio"],
+    "automatic-speech-recognition": ["audio-to-audio"],
+    "depth-estimation":            ["image-to-image"],
+    "object-detection":            ["image-classification"],
+    "audio-classification":        ["audio-to-audio"],
+    "image-classification":        ["image-to-image"],
+}
+
 # Score weights used when ranking candidate models.
 SCORE_WEIGHT_DOWNLOADS: float = 0.6
 SCORE_WEIGHT_LIKES:     float = 10.0

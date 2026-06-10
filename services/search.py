@@ -23,6 +23,7 @@ from config import (
     SCORE_WEIGHT_LIKES,
     SCORE_BOOST_KEYWORD,
     MODEL_SEARCH_LIMIT,
+    SUPPLEMENTAL_SEARCH_TASKS,
 )
 from models import ModelSuggestion
 from utils.llm import chat_completion_with_retry
@@ -253,9 +254,15 @@ def _keyword_fallback_plan(prompt: str) -> dict:
 
 # ── get_model_full_info ───────────────────────────────────────────────────────
 
-def get_model_full_info(api: HfApi, model_id: str, search_task: str) -> dict:
+def get_model_full_info(api: HfApi, model_id: str, search_task: str,
+                        strict_task: bool = False) -> dict:
     """
     Fetch provider mapping and chat-template status for a single model.
+
+    strict_task=True: only accept a provider whose reported task matches
+    search_task exactly. Used for supplemental-task searches so that e.g. a
+    pure text-to-image model doesn't masquerade as image-to-image.
+
     Returns a dict with keys: provider, supported_task, inferred_method,
     has_chat_template, pipeline_tag, tags.
     """
@@ -296,36 +303,53 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str) -> dict:
             print(f"  [DEBUG] {model_id} provider status value: {raw_status!r}")
 
         # "live" is the historic value; accept any non-error/disabled status
-        # so the code keeps working if HuggingFace renames it
         _DEAD_STATUSES = {"error", "disabled", "unsupported", "offline", "unavailable", None}
+
+        # Scan all providers: prefer one whose task matches search_task exactly.
+        # For strict_task searches (supplemental) only accept an exact match.
+        best_prov  = None   # provider whose ptask == search_task
+        best_ptask = None
+        any_prov   = None   # first live provider regardless of task
+        any_ptask  = None
 
         for pd in items:
             status = pd.get("status") if isinstance(pd, dict) else getattr(pd, "status", None)
             prov   = pd.get("provider") if isinstance(pd, dict) else getattr(pd, "provider", None)
             ptask  = pd.get("task") if isinstance(pd, dict) else getattr(pd, "task", None)
 
-            if status not in _DEAD_STATUSES and prov:
-                actual = ptask or search_task
-                result["provider"] = prov
-                result["supported_task"] = actual
+            if status in _DEAD_STATUSES or not prov:
+                continue
 
-                # Determine method — but never let the provider downgrade a
-                # specific search_task to plain text_generation.
-                # e.g. we searched "text-to-image" but provider reports
-                # "text-generation": trust the search_task, not the provider.
-                search_method = TASK_TO_METHOD.get(search_task, "text_generation")
+            if any_prov is None:
+                any_prov  = prov
+                any_ptask = ptask
 
-                if actual == "conversational":
-                    result["inferred_method"] = "chat_completion"
-                elif actual == "text-generation" and result["has_chat_template"]:
-                    result["inferred_method"] = "chat_completion"
-                elif search_method != "text_generation":
-                    # We searched for a specific non-text modality — keep it
-                    result["inferred_method"] = search_method
-                    result["supported_task"]  = search_task
-                else:
-                    result["inferred_method"] = TASK_TO_METHOD.get(actual, "text_generation")
+            if ptask == search_task:
+                best_prov  = prov
+                best_ptask = ptask
                 break
+
+        # Choose provider: exact match wins; fallback only allowed when not strict
+        chosen_prov  = best_prov  or (None if strict_task else any_prov)
+        chosen_ptask = best_ptask or (None if strict_task else any_ptask)
+
+        if chosen_prov:
+            actual = chosen_ptask or search_task
+            result["provider"] = chosen_prov
+            result["supported_task"] = actual
+
+            search_method = TASK_TO_METHOD.get(search_task, "text_generation")
+
+            if actual == "conversational":
+                result["inferred_method"] = "chat_completion"
+            elif actual == "text-generation" and result["has_chat_template"]:
+                result["inferred_method"] = "chat_completion"
+            elif search_method != "text_generation":
+                # Lock to the searched modality — don't let provider downgrade it
+                result["inferred_method"] = search_method
+                result["supported_task"]  = search_task
+            else:
+                result["inferred_method"] = TASK_TO_METHOD.get(actual, "text_generation")
 
     except Exception as e:
         print(f"  ℹ️  model_info failed for {model_id}: {e}")
@@ -583,51 +607,59 @@ def search_best_llms(
             break
 
     # ── Pass 1: collect raw candidates from list_models (quick) ─────────────────
-    seen_ids: set[str] = set()
-    raw: list[tuple]   = []   # (model_id, task, score, is_free)
+    seen_ids: set[str]  = set()
+    raw: list[tuple]    = []   # (model_id, target_task, score, gated, strict)
 
-    total_searches = len(queries) * len(tasks)
-    search_num     = 0
+    # Build full search list: primary tasks + supplemental tasks per primary.
+    # Supplemental entries are flagged strict=True so pass 2 only keeps them
+    # when their provider mapping explicitly reports the primary task.
+    search_plan: list[tuple] = []   # (query, hf_search_task, target_task, strict)
     for q in queries:
         for task in tasks:
-            search_num += 1
-            emit("searching", f"Searching for '{q}' ({task}) [{search_num}/{total_searches}]...")
-            try:
-                models = api.list_models(
-                    search=q, task=task,
-                    sort="downloads", direction=-1,
-                    limit=limit, full=True,
-                )
-            except TypeError:
-                models = api.list_models(search=q, filter=task, limit=limit, full=True)
+            search_plan.append((q, task, task, False))
+            for supp in SUPPLEMENTAL_SEARCH_TASKS.get(task, []):
+                search_plan.append((q, supp, task, True))
 
-            for model in models:
-                mid = model.modelId
-                if mid in seen_ids:
-                    continue
-                seen_ids.add(mid)
+    total_searches = len(search_plan)
+    for search_num, (q, hf_task, target_task, strict) in enumerate(search_plan, 1):
+        label = f"{hf_task}→{target_task}" if strict else hf_task
+        emit("searching", f"Searching for '{q}' ({label}) [{search_num}/{total_searches}]...")
+        try:
+            models = api.list_models(
+                search=q, task=hf_task,
+                sort="downloads", direction=-1,
+                limit=limit, full=True,
+            )
+        except TypeError:
+            models = api.list_models(search=q, filter=hf_task, limit=limit, full=True)
 
-                tags  = model.tags or []
-                score = (
-                    (model.downloads or 0) * SCORE_WEIGHT_DOWNLOADS
-                    + (model.likes or 0) * SCORE_WEIGHT_LIKES
-                )
-                for w in boost_words:
-                    if w.lower() in mid.lower() or w.lower() in " ".join(tags).lower():
-                        score += SCORE_BOOST_KEYWORD
+        for model in models:
+            mid = model.modelId
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
 
-                gated = bool(getattr(model, "gated", False))
-                raw.append((mid, task, score, gated))
+            tags  = model.tags or []
+            score = (
+                (model.downloads or 0) * SCORE_WEIGHT_DOWNLOADS
+                + (model.likes or 0) * SCORE_WEIGHT_LIKES
+            )
+            for w in boost_words:
+                if w.lower() in mid.lower() or w.lower() in " ".join(tags).lower():
+                    score += SCORE_BOOST_KEYWORD
+
+            gated = bool(getattr(model, "gated", False))
+            raw.append((mid, target_task, score, gated, strict))
 
     # ── Pass 2: fetch full provider/method info per model (the slow part) ────────
     total = len(raw)
     emit("analyzing", f"Found {total} candidates. Checking provider availability...")
 
     suggestions: list[ModelSuggestion] = []
-    for i, (mid, task, score, gated) in enumerate(raw):
+    for i, (mid, task, score, gated, strict) in enumerate(raw):
         if i % 5 == 0:
             emit("progress", f"Checking model {i + 1}/{total}...")
-        mi = get_model_full_info(api, mid, task)
+        mi = get_model_full_info(api, mid, task, strict_task=strict)
         suggestions.append(ModelSuggestion(
             name=mid,
             url=HF_MODEL_URL + mid,

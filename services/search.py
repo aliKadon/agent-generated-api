@@ -259,14 +259,14 @@ def _keyword_fallback_plan(prompt: str) -> dict:
 def get_model_full_info(api: HfApi, model_id: str, search_task: str,
                         strict_task: bool = False) -> dict:
     """
-    Fetch provider mapping and chat-template status for a single model.
+    Fetch provider mapping and metadata for a single model via direct HF HTTP API.
+
+    Uses the raw REST endpoint directly so gated models (which raise
+    GatedRepoError in huggingface_hub) are handled transparently — provider
+    info is public metadata served regardless of gating or license agreement.
 
     strict_task=True: only accept a provider whose reported task matches
-    search_task exactly. Used for supplemental-task searches so that e.g. a
-    pure text-to-image model doesn't masquerade as image-to-image.
-
-    Returns a dict with keys: provider, supported_task, inferred_method,
-    has_chat_template, pipeline_tag, tags.
+    search_task exactly (used for supplemental-task searches).
     """
     result = {
         "provider": None,
@@ -277,6 +277,78 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
         "tags": [],
         "license": None,
     }
+
+    _DEAD_STATUSES = {"error", "disabled", "unsupported", "offline", "unavailable", None}
+
+    # ── Primary: direct HF REST API (works for gated and non-gated models) ───
+    try:
+        url = (f"https://huggingface.co/api/models/{model_id}"
+               f"?expand[]=inferenceProviderMapping&expand[]=pipeline_tag&expand[]=tags")
+        headers = {"Authorization": f"Bearer {os.getenv('HF_TOKEN', '')}"}
+        resp = _requests.get(url, headers=headers, timeout=10)
+        print(f"  [DEBUG] {model_id} HTTP status={resp.status_code}")
+
+        if resp.status_code == 200:
+            data = resp.json()
+            result["pipeline_tag"] = data.get("pipeline_tag")
+            result["tags"] = data.get("tags") or []
+
+            tag_text = " ".join(result["tags"]).lower()
+            result["has_chat_template"] = any(
+                ind in tag_text or ind in model_id.lower()
+                for ind in CHAT_TEMPLATE_INDICATORS
+            )
+            license_tags = [t for t in result["tags"] if t.startswith("license:")]
+            if license_tags:
+                result["license"] = license_tags[0].replace("license:", "")
+
+            mapping = data.get("inferenceProviderMapping") or {}
+            print(f"  [DEBUG] {model_id} providers={list(mapping.keys())}")
+
+            best_prov  = None
+            best_ptask = None
+            any_prov   = None
+            any_ptask  = None
+
+            for prov_name, pd in mapping.items():
+                status = pd.get("status") if isinstance(pd, dict) else None
+                ptask  = pd.get("task")   if isinstance(pd, dict) else None
+
+                if status in _DEAD_STATUSES:
+                    continue
+
+                if any_prov is None:
+                    any_prov  = prov_name
+                    any_ptask = ptask
+
+                if ptask == search_task:
+                    best_prov  = prov_name
+                    best_ptask = ptask
+                    break
+
+            chosen_prov  = best_prov  or (None if strict_task else any_prov)
+            chosen_ptask = best_ptask or (None if strict_task else any_ptask)
+
+            if chosen_prov:
+                actual = chosen_ptask or search_task
+                result["provider"] = chosen_prov
+                result["supported_task"] = actual
+                search_method = TASK_TO_METHOD.get(search_task, "text_generation")
+                if actual == "conversational":
+                    result["inferred_method"] = "chat_completion"
+                elif actual == "text-generation" and result["has_chat_template"]:
+                    result["inferred_method"] = "chat_completion"
+                elif search_method != "text_generation":
+                    result["inferred_method"] = search_method
+                    result["supported_task"]  = search_task
+                else:
+                    result["inferred_method"] = TASK_TO_METHOD.get(actual, "text_generation")
+
+            return result
+    except Exception as e:
+        print(f"  ℹ️  HTTP fetch failed for {model_id}: {e} — trying huggingface_hub fallback")
+
+    # ── Fallback: huggingface_hub client (for non-gated models if HTTP failed) ─
     try:
         info = api.model_info(model_id, expand="inferenceProviderMapping")
         result["pipeline_tag"] = getattr(info, "pipeline_tag", None)
@@ -291,61 +363,32 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
         if license_tags:
             result["license"] = license_tags[0].replace("license:", "")
 
-        # Try multiple attribute names — huggingface_hub changed this in newer versions
         mapping = (
             getattr(info, "inference_provider_mapping", None)
             or getattr(info, "inference_providers", None)
             or getattr(info, "inferenceProviderMapping", None)
-        )
-        if not mapping:
-            return result
+        ) or {}
 
-        # Normalise to list of (provider_name, details_dict) pairs regardless of
-        # whether huggingface_hub returns a plain dict or a list of objects.
         if isinstance(mapping, dict):
-            items = list(mapping.items())   # [("fal-ai", {"status": "live", ...}), ...]
+            items = list(mapping.items())
         else:
-            # older huggingface_hub versions may return a list of objects that
-            # each carry a "provider" attribute
             items = [
-                (
-                    (p.get("provider") if isinstance(p, dict) else getattr(p, "provider", None)),
-                    p,
-                )
+                ((p.get("provider") if isinstance(p, dict) else getattr(p, "provider", None)), p)
                 for p in mapping
             ]
 
-        # Log the first entry so we can see the real structure in Render logs
-        if items:
-            print(f"  [DEBUG] {model_id} first provider entry: {items[0]!r}")
-
-        # "live" is the historic value; accept any non-error/disabled status
-        _DEAD_STATUSES = {"error", "disabled", "unsupported", "offline", "unavailable", None}
-
-        # Scan all providers: prefer one whose task matches search_task exactly.
-        # For strict_task searches (supplemental) only accept an exact match.
-        best_prov  = None   # provider whose ptask == search_task
-        best_ptask = None
-        any_prov   = None   # first live provider regardless of task
-        any_ptask  = None
-
+        best_prov = best_ptask = any_prov = any_ptask = None
         for prov, pd in items:
             status = pd.get("status") if isinstance(pd, dict) else getattr(pd, "status", None)
             ptask  = pd.get("task")   if isinstance(pd, dict) else getattr(pd, "task",   None)
-
             if status in _DEAD_STATUSES or not prov:
                 continue
-
             if any_prov is None:
-                any_prov  = prov
-                any_ptask = ptask
-
+                any_prov, any_ptask = prov, ptask
             if ptask == search_task:
-                best_prov  = prov
-                best_ptask = ptask
+                best_prov, best_ptask = prov, ptask
                 break
 
-        # Choose provider: exact match wins; fallback only allowed when not strict
         chosen_prov  = best_prov  or (None if strict_task else any_prov)
         chosen_ptask = best_ptask or (None if strict_task else any_ptask)
 
@@ -353,86 +396,18 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
             actual = chosen_ptask or search_task
             result["provider"] = chosen_prov
             result["supported_task"] = actual
-
             search_method = TASK_TO_METHOD.get(search_task, "text_generation")
-
             if actual == "conversational":
                 result["inferred_method"] = "chat_completion"
             elif actual == "text-generation" and result["has_chat_template"]:
                 result["inferred_method"] = "chat_completion"
             elif search_method != "text_generation":
-                # Lock to the searched modality — don't let provider downgrade it
                 result["inferred_method"] = search_method
                 result["supported_task"]  = search_task
             else:
                 result["inferred_method"] = TASK_TO_METHOD.get(actual, "text_generation")
-
     except Exception as e:
-        print(f"  ℹ️  model_info failed for {model_id}: {e} — trying direct HF API fallback")
-        # huggingface_hub raises GatedRepoError for gated models even on metadata
-        # requests. The raw HF API endpoint serves inferenceProviderMapping publicly
-        # (it's shown on the model page without login), so we bypass the client.
-        try:
-            url = f"https://huggingface.co/api/models/{model_id}?expand[]=inferenceProviderMapping"
-            headers = {"Authorization": f"Bearer {os.getenv('HF_TOKEN', '')}"}
-            resp = _requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                result["pipeline_tag"] = data.get("pipeline_tag")
-                result["tags"] = data.get("tags") or []
-
-                tag_text = " ".join(result["tags"]).lower()
-                result["has_chat_template"] = any(
-                    ind in tag_text or ind in model_id.lower()
-                    for ind in CHAT_TEMPLATE_INDICATORS
-                )
-                license_tags = [t for t in result["tags"] if t.startswith("license:")]
-                if license_tags:
-                    result["license"] = license_tags[0].replace("license:", "")
-
-                mapping = data.get("inferenceProviderMapping") or {}
-                _DEAD_STATUSES = {"error", "disabled", "unsupported", "offline", "unavailable", None}
-
-                best_prov  = None
-                best_ptask = None
-                any_prov   = None
-                any_ptask  = None
-
-                for prov_name, pd in mapping.items():
-                    status = pd.get("status") if isinstance(pd, dict) else None
-                    ptask  = pd.get("task")   if isinstance(pd, dict) else None
-
-                    if status in _DEAD_STATUSES:
-                        continue
-
-                    if any_prov is None:
-                        any_prov  = prov_name
-                        any_ptask = ptask
-
-                    if ptask == search_task:
-                        best_prov  = prov_name
-                        best_ptask = ptask
-                        break
-
-                chosen_prov  = best_prov  or (None if strict_task else any_prov)
-                chosen_ptask = best_ptask or (None if strict_task else any_ptask)
-
-                if chosen_prov:
-                    actual = chosen_ptask or search_task
-                    result["provider"] = chosen_prov
-                    result["supported_task"] = actual
-                    search_method = TASK_TO_METHOD.get(search_task, "text_generation")
-                    if actual == "conversational":
-                        result["inferred_method"] = "chat_completion"
-                    elif actual == "text-generation" and result["has_chat_template"]:
-                        result["inferred_method"] = "chat_completion"
-                    elif search_method != "text_generation":
-                        result["inferred_method"] = search_method
-                        result["supported_task"]  = search_task
-                    else:
-                        result["inferred_method"] = TASK_TO_METHOD.get(actual, "text_generation")
-        except Exception as e2:
-            print(f"  ℹ️  HF API fallback also failed for {model_id}: {e2}")
+        print(f"  ℹ️  huggingface_hub fallback also failed for {model_id}: {e}")
 
     return result
 

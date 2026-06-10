@@ -960,13 +960,30 @@ def chat(request: ChatRequest, req: Request):
 
         history       = _CHAT_SESSIONS.setdefault(request.session_id, [])
         mem_ctx       = memory_pass(request.message)
-        # When a file_path is provided, tell the router so it can pick a file-input
-        # agent instead of falling back to chat because "no file path in message".
-        _router_msg = (
-            f"[file_path: {request.file_path}] {request.message}"
-            if request.file_path else request.message
-        )
-        route_result  = route(_router_msg)
+
+        # Fast-path: when a file_path is provided, find an active agent that accepts
+        # file input (input_format contains "|||") and bypass the LLM router entirely.
+        # Small LLMs reliably fail to connect "remove the red circle" → edit_images_agent
+        # even when the file path is in the message.
+        route_result = None
+        if request.file_path:
+            _file_agents = [a for a in active_agents if "|||" in a.get("input_format", "")]
+            if len(_file_agents) == 1:
+                route_result = {
+                    "action": "agent",
+                    "target": _file_agents[0]["name"],
+                    "input":  request.message,
+                    "reason": "file_path provided → direct file-input agent",
+                }
+                print(f"  [chat] file fast-path → {_file_agents[0]['name']}")
+            elif len(_file_agents) > 1:
+                # Multiple file-input agents: pass file context to LLM to pick the right one
+                route_result = route(
+                    f"[file_path: {request.file_path}] {request.message}"
+                )
+
+        if route_result is None:
+            route_result = route(request.message)
 
         # Safety net: if the router somehow picked an inactive or unknown agent,
         # block it here before execute() is called.

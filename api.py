@@ -24,8 +24,6 @@ Production (Render):
   Set DATABASE_URL env var to your Supabase / Neon PostgreSQL connection string.
 """
 
-from __future__ import annotations
-
 import asyncio
 import glob
 import json
@@ -274,37 +272,6 @@ def _inactive_agent_reply(agent: dict) -> str:
     )
 
 
-def _is_active_value(value) -> bool:
-    """Normalize DB boolean values from SQLite/Postgres/string payloads."""
-    if isinstance(value, str):
-        return value.strip().lower() not in {"0", "false", "f", "no", "off"}
-    return bool(value)
-
-
-def _chat_agent_sets() -> tuple[set[str], set[str]]:
-    """
-    Return inactive file paths and inactive names from the DB.
-    The name fallback keeps chat safe even if an old row has a missing/stale file_path.
-    """
-    _db.init_db()
-    with _db.get_db() as conn:
-        rows = _db.fetchall(conn, "SELECT name, file_path, is_active FROM agents")
-
-    inactive_files: set[str] = set()
-    inactive_names: set[str] = set()
-    for row in rows:
-        if _is_active_value(row.get("is_active")):
-            continue
-
-        if row.get("name"):
-            inactive_names.add(row["name"])
-        if row.get("file_path"):
-            inactive_files.add(row["file_path"])
-            inactive_names.add(os.path.basename(row["file_path"]).replace("_agent.py", ""))
-
-    return inactive_files, inactive_names
-
-
 def _extract_file_url(reply: str, base_url: str) -> str | None:
     """Return a public URL if the reply contains a path to a generated file."""
     base = base_url.rstrip("/")
@@ -334,7 +301,7 @@ class AgentSummary(BaseModel):
     input_format: str
     file_path:    str
     synced_at:    str
-    is_active:    bool
+    active:       bool = True
 
 
 class AgentDetail(AgentSummary):
@@ -344,6 +311,10 @@ class AgentDetail(AgentSummary):
 class AgentsListResponse(BaseModel):
     total:  int
     agents: list[AgentSummary]
+
+
+class AgentPatchRequest(BaseModel):
+    active: bool
 
 
 class SyncResponse(BaseModel):
@@ -365,7 +336,11 @@ def list_agents():
             conn,
             "SELECT id, name, description, method, input_format, file_path, synced_at, is_active FROM agents ORDER BY id",
         )
-    return {"total": len(rows), "agents": rows}
+    agents = [
+        {**{k: v for k, v in r.items() if k != "is_active"}, "active": bool(r["is_active"])}
+        for r in rows
+    ]
+    return {"total": len(agents), "agents": agents}
 
 
 @app.get(
@@ -374,11 +349,12 @@ def list_agents():
     summary="Get agent by ID (includes full source code)",
 )
 def get_agent(agent_id: int):
+    ph = "%s" if os.getenv("DATABASE_URL") else "?"
     with _db.get_db() as conn:
-        row = _db.fetchone(conn, "SELECT * FROM agents WHERE id = %s" if os.getenv("DATABASE_URL") else "SELECT * FROM agents WHERE id = ?", (agent_id,))
+        row = _db.fetchone(conn, f"SELECT * FROM agents WHERE id = {ph}", (agent_id,))
     if not row:
         raise HTTPException(status_code=404, detail=f"No agent with id={agent_id}")
-    return row
+    return {**{k: v for k, v in row.items() if k != "is_active"}, "active": bool(row.get("is_active", True))}
 
 
 @app.delete(
@@ -403,6 +379,26 @@ def delete_agent(agent_id: int):
 
     status = "deleted from database and disk" if file_deleted else "deleted from database (file was already missing)"
     return {"id": row["id"], "name": row["name"], "message": f"Agent '{row['name']}' {status}."}
+
+
+@app.patch(
+    "/agents/{agent_id}",
+    summary="Update agent — currently supports toggling active status",
+)
+def patch_agent(agent_id: int, body: AgentPatchRequest):
+    ph = "%s" if os.getenv("DATABASE_URL") else "?"
+    with _db.get_db() as conn:
+        row = _db.fetchone(conn, f"SELECT id, name FROM agents WHERE id = {ph}", (agent_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail=f"No agent with id={agent_id}")
+        _db.execute(
+            conn,
+            f"UPDATE agents SET is_active = {ph} WHERE id = {ph}",
+            (body.active, agent_id),
+        )
+    status = "activated" if body.active else "deactivated"
+    return {"id": row["id"], "name": row["name"], "active": body.active,
+            "message": f"Agent '{row['name']}' {status}."}
 
 
 @app.post("/agents/sync", response_model=SyncResponse, summary="Sync agents from disk to DB")
@@ -759,7 +755,6 @@ class ChatAgentStatus(BaseModel):
     summary="List all agents with their active/inactive status for chat",
 )
 def list_chat_agents():
-    _db.init_db()
     with _db.get_db() as conn:
         rows = _db.fetchall(conn, "SELECT name, description, method, is_active FROM agents ORDER BY name")
     return [
@@ -767,7 +762,7 @@ def list_chat_agents():
             "name":        r["name"],
             "description": r["description"],
             "method":      r["method"],
-            "active":      _is_active_value(r["is_active"]),
+            "active":      bool(r["is_active"]),
         }
         for r in rows
     ]
@@ -785,8 +780,6 @@ def activate_chat_agent(name: str):
         if not row:
             raise HTTPException(status_code=404, detail=f"No agent named '{name}' in database.")
         _db.execute(conn, f"UPDATE agents SET is_active = {ph} WHERE name = {ph}", (True, name))
-        if row.get("file_path"):
-            _db.execute(conn, f"UPDATE agents SET is_active = {ph} WHERE file_path = {ph}", (True, row["file_path"]))
 
     if _ACTIVE_AGENTS is not None:
         _ACTIVE_AGENTS.add(name)
@@ -806,32 +799,18 @@ def deactivate_chat_agent(name: str):
     global _ACTIVE_AGENTS
     ph = "%s" if os.getenv("DATABASE_URL") else "?"
     with _db.get_db() as conn:
-        row = _db.fetchone(conn, f"SELECT name, file_path FROM agents WHERE name = {ph}", (name,))
+        row = _db.fetchone(conn, f"SELECT name FROM agents WHERE name = {ph}", (name,))
         if not row:
             raise HTTPException(status_code=404, detail=f"No agent named '{name}' in database.")
         _db.execute(conn, f"UPDATE agents SET is_active = {ph} WHERE name = {ph}", (False, name))
-        if row.get("file_path"):
-            _db.execute(conn, f"UPDATE agents SET is_active = {ph} WHERE file_path = {ph}", (False, row["file_path"]))
 
     if _ACTIVE_AGENTS is None:
         # First deactivation — initialise cache with all agents except this one
         with _db.get_db() as conn:
-            all_rows = _db.fetchall(conn, "SELECT name, file_path FROM agents")
-        inactive_aliases = {name}
-        if row.get("file_path"):
-            inactive_aliases.add(os.path.basename(row["file_path"]).replace("_agent.py", ""))
-        _ACTIVE_AGENTS = {
-            alias
-            for r in all_rows
-            for alias in (
-                r["name"],
-                os.path.basename(r["file_path"]).replace("_agent.py", "") if r.get("file_path") else r["name"],
-            )
-        } - inactive_aliases
+            all_rows = _db.fetchall(conn, "SELECT name FROM agents")
+        _ACTIVE_AGENTS = {r["name"] for r in all_rows} - {name}
     else:
         _ACTIVE_AGENTS.discard(name)
-        if row.get("file_path"):
-            _ACTIVE_AGENTS.discard(os.path.basename(row["file_path"]).replace("_agent.py", ""))
 
     return {"message": f"Agent '{name}' deactivated.", "active_agents": sorted(_ACTIVE_AGENTS)}
 
@@ -864,13 +843,15 @@ def chat(request: ChatRequest, req: Request):
         # in DB vs "generating_image" from the file scanner).
         # "Inactive wins": if ANY DB record for a given file_path has is_active=FALSE,
         # the file is treated as inactive — this handles duplicate records correctly.
-        inactive_files, inactive_names = _chat_agent_sets()
-        print(f"  [chat] inactive_files={inactive_files} inactive_names={inactive_names}")
+        with _db.get_db() as _conn:
+            _all_db_rows = _db.fetchall(_conn, "SELECT file_path, is_active FROM agents")
+        _inactive_fps: set[str] = {
+            r["file_path"] for r in _all_db_rows
+            if r.get("file_path") and not r["is_active"]
+        }
+        print(f"  [chat] inactive_fps={_inactive_fps}")
 
-        active_agents = [
-            a for a in all_agents
-            if a.get("file") not in inactive_files and a.get("name") not in inactive_names
-        ]
+        active_agents = [a for a in all_agents if a.get("file") not in _inactive_fps]
 
         _oa.AGENTS     = active_agents   # active only — used by fast-path + execute
         _oa.ALL_AGENTS = all_agents      # all agents — shown in router prompt with [INACTIVE] tags

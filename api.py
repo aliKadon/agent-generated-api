@@ -530,8 +530,10 @@ def generate_start(request: GenerateStartRequest):
     # Fall back to any free model if HuggingFace has restricted provider access
     # (common for text-generation — image models are usually still available).
     free_models = [m for m in results if m.is_free and m.has_provider][:15]
+    no_provider_fallback = False
     if not free_models:
         free_models = [m for m in results if m.is_free][:15]
+        no_provider_fallback = True
     if not free_models:
         raise HTTPException(status_code=404, detail="No free models found. Try a different description.")
 
@@ -542,7 +544,7 @@ def generate_start(request: GenerateStartRequest):
         "free_models": free_models,
     }
 
-    return {
+    response = {
         "session_id": session_id,
         "step":       "select_model",
         "models": [
@@ -557,6 +559,14 @@ def generate_start(request: GenerateStartRequest):
         ],
         "message": "Pick a model using its index number, then call /agents/generate/continue.",
     }
+    if no_provider_fallback:
+        response["provider_warning"] = (
+            "None of these models have an active HuggingFace Inference API provider. "
+            "They cannot be called via InferenceClient at runtime. "
+            "HuggingFace does not currently host these models on their serverless inference API. "
+            "Consider choosing a different agent description to find models with provider support."
+        )
+    return response
 
 
 @app.post(
@@ -588,8 +598,10 @@ async def generate_start_stream(request: GenerateStartRequest):
         try:
             results, _ = search_best_llms(request.description, progress_cb=cb)
             free_models = [m for m in results if m.is_free and m.has_provider][:15]
+            no_provider_fallback = False
             if not free_models:
                 free_models = [m for m in results if m.is_free][:15]
+                no_provider_fallback = True
 
             if not free_models:
                 progress_q.put({
@@ -606,7 +618,7 @@ async def generate_start_stream(request: GenerateStartRequest):
                 "free_models": free_models,
             }
 
-            progress_q.put({
+            done_event = {
                 "status":     "done",
                 "message":    f"Found {len(free_models)} models ready to use!",
                 "session_id": session_id,
@@ -621,7 +633,15 @@ async def generate_start_stream(request: GenerateStartRequest):
                     }
                     for i, m in enumerate(free_models)
                 ],
-            })
+            }
+            if no_provider_fallback:
+                done_event["provider_warning"] = (
+                    "None of these models have an active HuggingFace Inference API provider. "
+                    "They cannot be called via InferenceClient at runtime. "
+                    "HuggingFace does not currently host these models on their serverless inference API. "
+                    "Consider choosing a different agent description to find models with provider support."
+                )
+            progress_q.put(done_event)
 
         except Exception as e:
             err = str(e)

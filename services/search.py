@@ -142,118 +142,118 @@ def _keyword_fallback_plan(prompt: str) -> dict:
     # ── image understanding (must come BEFORE image generation) ──────────────
     if _read() and _img():
         return {"tasks": ["image-to-text"],
-                "queries": ["image to text", "blip", "llava", "image captioning"],
-                "boost_words": ["blip", "llava", "captioning"]}
+                "queries": ["captioning", "image understanding"],
+                "boost_words": ["captioning", "multimodal"]}
 
     if any(w in p for w in ["vqa", "visual question", "question about image",
                               "ask about image", "answer from image"]):
         return {"tasks": ["visual-question-answering"],
-                "queries": ["visual question answering", "vqa", "blip-2", "idefics"],
-                "boost_words": ["vqa", "blip"]}
+                "queries": ["visual question", "vqa"],
+                "boost_words": ["vqa", "visual"]}
 
     if _doc() or any(w in p for w in ["extract from file", "read file", "file reader"]):
         return {"tasks": ["document-question-answering"],
-                "queries": ["document question answering", "layoutlm", "donut", "document understanding"],
-                "boost_words": ["layoutlm", "donut"]}
+                "queries": ["document understanding", "layout"],
+                "boost_words": ["document", "layout"]}
 
     if any(w in p for w in ["object detection", "detect object", "find objects",
                               "bounding box", "yolo", "count objects", "locate objects"]):
         return {"tasks": ["object-detection"],
-                "queries": ["yolo", "object detection", "detr", "rtdetr"],
-                "boost_words": ["detection", "yolo"]}
+                "queries": ["object detection", "detection"],
+                "boost_words": ["detection", "bounding"]}
 
     if any(w in p for w in ["classify image", "image classification", "label image",
                               "image category", "identify image"]):
         return {"tasks": ["image-classification"],
-                "queries": ["image classification", "vit", "resnet", "efficientnet"],
-                "boost_words": ["classification", "vit"]}
+                "queries": ["image classification", "classification"],
+                "boost_words": ["classification", "vision"]}
 
     if any(w in p for w in ["depth estimation", "depth map", "3d", "monocular depth"]):
         return {"tasks": ["depth-estimation"],
-                "queries": ["depth estimation", "midas", "depth anything", "dpt"],
-                "boost_words": ["depth", "midas"]}
+                "queries": ["depth estimation", "depth"],
+                "boost_words": ["depth", "monocular"]}
 
     # ── image generation / editing ───────────────────────────────────────────
     if _edit() and _img():
         return {"tasks": ["image-to-image"],
-                "queries": ["flux", "img2img", "instruct-pix2pix", "controlnet"],
-                "boost_words": ["flux", "img2img", "edit"]}
+                "queries": ["editing", "img2img", "inpaint"],
+                "boost_words": ["edit", "img2img", "inpaint"]}
 
     if (_gen() and _img()) or any(w in p for w in ["text to image", "text-to-image",
                                                      "artwork", "illustration", "صورة", "ارسم"]):
         return {"tasks": ["text-to-image"],
-                "queries": ["flux", "stable-diffusion", "sdxl", "playground"],
-                "boost_words": ["flux", "sdxl", "diffusion"]}
+                "queries": ["generation", "diffusion"],
+                "boost_words": ["diffusion", "generation"]}
 
     # ── video ────────────────────────────────────────────────────────────────
     if _vid():
         return {"tasks": ["text-to-video"],
-                "queries": ["text to video", "wan", "cogvideo", "video generation"],
+                "queries": ["video generation", "animation"],
                 "boost_words": ["video", "animate"]}
 
     # ── audio / speech ───────────────────────────────────────────────────────
     if any(w in p for w in ["transcribe", "speech to text", "speech-to-text",
                               "audio to text", "recognize speech", "stt", "whisper"]):
         return {"tasks": ["automatic-speech-recognition"],
-                "queries": ["whisper", "speech recognition", "asr", "wav2vec"],
-                "boost_words": ["whisper", "wav2vec"]}
+                "queries": ["speech recognition", "asr", "transcription"],
+                "boost_words": ["asr", "recognition"]}
 
     if any(w in p for w in ["text to speech", "text-to-speech", "tts", "read aloud",
                               "voice synthesis", "speak text", "narrate", "voice generation"]):
         return {"tasks": ["text-to-speech"],
-                "queries": ["text to speech", "tts", "coqui", "xtts", "speecht5"],
-                "boost_words": ["tts", "coqui"]}
+                "queries": ["text to speech", "tts", "voice synthesis"],
+                "boost_words": ["tts", "voice"]}
 
     if any(w in p for w in ["generate music", "music generation", "compose music",
                               "generate audio", "sound effect", "musicgen"]):
         return {"tasks": ["text-to-audio"],
-                "queries": ["musicgen", "audio generation", "music", "audiocraft"],
-                "boost_words": ["musicgen", "audiocraft"]}
+                "queries": ["music generation", "audio generation"],
+                "boost_words": ["music", "audio"]}
 
     if any(w in p for w in ["audio classification", "classify audio", "sound classification",
                               "identify sound", "music genre", "emotion voice"]):
         return {"tasks": ["audio-classification"],
-                "queries": ["audio classification", "sound classification", "ast"],
+                "queries": ["audio classification", "sound classification"],
                 "boost_words": ["classification", "audio"]}
 
     # ── text tasks ───────────────────────────────────────────────────────────
     if any(w in p for w in ["translate", "translation", "multilingual", "localize"]):
         return {"tasks": ["translation"],
-                "queries": ["translation", "multilingual", "nllb", "opus-mt", "marian"],
+                "queries": ["translation", "multilingual"],
                 "boost_words": ["translation", "multilingual"]}
 
     if any(w in p for w in ["summarize", "summarization", "condense", "tldr",
                               "key points", "brief", "abstract"]):
         return {"tasks": ["summarization"],
-                "queries": ["summarization", "bart", "pegasus", "led"],
-                "boost_words": ["summarization", "bart"]}
+                "queries": ["summarization", "abstractive"],
+                "boost_words": ["summarization", "abstractive"]}
 
     if any(w in p for w in ["similarity", "semantic search", "embedding", "embeddings",
                               "vector", "retrieval", "compare text", "dense retrieval"]):
         return {"tasks": ["sentence-similarity"],
-                "queries": ["sentence similarity", "embedding", "sbert", "e5", "bge"],
-                "boost_words": ["embedding", "sbert"]}
+                "queries": ["embedding", "sentence similarity"],
+                "boost_words": ["embedding", "retrieval"]}
 
     if any(w in p for w in ["named entity", "ner", "entity recognition",
                               "pos tagging", "token classification", "extract entities"]):
         return {"tasks": ["token-classification"],
-                "queries": ["ner", "named entity recognition", "bert ner", "token classification"],
-                "boost_words": ["ner", "bert"]}
+                "queries": ["named entity recognition", "token classification"],
+                "boost_words": ["ner", "entity"]}
 
     if any(w in p for w in ["question answering", "reading comprehension",
                               "answer from context", "extract answer"]):
         return {"tasks": ["question-answering"],
-                "queries": ["question answering", "bert qa", "roberta squad", "extractive qa"],
-                "boost_words": ["qa", "squad"]}
+                "queries": ["question answering", "extractive"],
+                "boost_words": ["qa", "extractive"]}
 
     if any(w in p for w in ["fill mask", "fill blank", "masked language", "predict token"]):
         return {"tasks": ["fill-mask"],
-                "queries": ["bert", "roberta", "fill mask", "masked language model"],
-                "boost_words": ["bert", "roberta"]}
+                "queries": ["fill mask", "masked language"],
+                "boost_words": ["masked", "fill"]}
 
     # ── default: chat / text generation ──────────────────────────────────────
     return {"tasks": ["text-generation"],
-            "queries": ["instruct", "chat", "llm", "qwen", "mistral", "llama"],
+            "queries": ["instruct", "chat"],
             "boost_words": ["instruct", "chat"]}
 
 
@@ -459,8 +459,8 @@ def search_best_llms(
                              "document reader", "document understanding", "read file",
                              "extract from file", "layoutlm", "donut"],
             "task":         "document-question-answering",
-            "queries":      ["document question answering", "layoutlm", "donut", "document understanding"],
-            "boost":        ["layoutlm", "donut"],
+            "queries":      ["document understanding", "layout"],
+            "boost":        ["document", "layout"],
         },
         # visual question answering — answer questions about an image
         {
@@ -468,8 +468,8 @@ def search_best_llms(
                              "ask about image", "question about photo", "question about picture",
                              "what is in the image", "image question answering"],
             "task":         "visual-question-answering",
-            "queries":      ["visual question answering", "vqa", "blip-2", "idefics"],
-            "boost":        ["vqa", "blip"],
+            "queries":      ["visual question", "vqa"],
+            "boost":        ["vqa", "visual"],
         },
         # image captioning / description / reading — reads/describes an image
         {
@@ -480,8 +480,8 @@ def search_best_llms(
             "exclude_any":  ["generate", "create", "draw", "paint", "make", "render",
                              "edit", "modify"],
             "task":         "image-to-text",
-            "queries":      ["image to text", "blip", "llava", "image captioning"],
-            "boost":        ["blip", "llava", "captioning"],
+            "queries":      ["captioning", "image understanding"],
+            "boost":        ["captioning", "multimodal"],
         },
         # object detection
         {
@@ -489,8 +489,8 @@ def search_best_llms(
                              "bounding box", "yolo", "count objects", "locate objects",
                              "draw bounding box", "detect bounding"],
             "task":         "object-detection",
-            "queries":      ["yolo", "object detection", "detr", "rtdetr"],
-            "boost":        ["detection", "yolo"],
+            "queries":      ["object detection", "detection"],
+            "boost":        ["detection", "bounding"],
         },
         # image classification
         {
@@ -498,16 +498,16 @@ def search_best_llms(
                              "recognize image", "identify image", "image label",
                              "what category is this image", "label image"],
             "task":         "image-classification",
-            "queries":      ["image classification", "vit", "resnet", "efficientnet"],
-            "boost":        ["classification", "vit"],
+            "queries":      ["image classification", "classification"],
+            "boost":        ["classification", "vision"],
         },
         # depth estimation
         {
             "match_any":    ["depth estimation", "depth map", "3d depth", "monocular depth",
                              "depth from image", "depth anything", "midas"],
             "task":         "depth-estimation",
-            "queries":      ["depth estimation", "midas", "depth anything", "dpt"],
-            "boost":        ["depth", "midas"],
+            "queries":      ["depth estimation", "depth"],
+            "boost":        ["depth", "monocular"],
         },
         # ── image editing ────────────────────────────────────────────────────────
         {
@@ -516,8 +516,8 @@ def search_best_llms(
                              "enhance", "fix", "restore", "colorize", "upscale", "stylize",
                              "inpaint", "outpaint", "restyle"],
             "task":         "image-to-image",
-            "queries":      ["flux", "img2img", "instruct-pix2pix", "controlnet"],
-            "boost":        ["flux", "img2img", "edit"],
+            "queries":      ["edit", "img2img", "inpaint", "style"],
+            "boost":        ["edit", "img2img", "inpaint"],
         },
         # ── image generation ─────────────────────────────────────────────────────
         # exclude reading/analyzing words to avoid false positives
@@ -530,8 +530,8 @@ def search_best_llms(
             "exclude_any":  ["read", "analyze", "describe", "understand", "caption",
                              "extract", "ocr", "edit", "modify", "question"],
             "task":         "text-to-image",
-            "queries":      ["flux", "stable-diffusion", "sdxl", "playground"],
-            "boost":        ["flux", "sdxl", "diffusion"],
+            "queries":      ["generate", "diffusion", "generation"],
+            "boost":        ["diffusion", "generation"],
         },
         # ── video ────────────────────────────────────────────────────────────────
         {
@@ -539,7 +539,7 @@ def search_best_llms(
                              "text-to-video", "video generation", "animate", "animation",
                              "cogvideo", "wan video", "video from text"],
             "task":         "text-to-video",
-            "queries":      ["text to video", "wan", "cogvideo", "video generation"],
+            "queries":      ["video generation", "animation"],
             "boost":        ["video", "animate"],
         },
         # ── audio / speech ───────────────────────────────────────────────────────
@@ -549,8 +549,8 @@ def search_best_llms(
                              "voice to text", "audio to text", "recognize speech",
                              "stt", "whisper", "asr", "transcription"],
             "task":         "automatic-speech-recognition",
-            "queries":      ["whisper", "speech recognition", "asr", "wav2vec"],
-            "boost":        ["whisper", "wav2vec"],
+            "queries":      ["speech recognition", "asr", "transcription"],
+            "boost":        ["asr", "recognition"],
         },
         # text-to-speech — text → spoken audio
         {
@@ -558,8 +558,8 @@ def search_best_llms(
                              "voice synthesis", "speak text", "narrate", "voice generation",
                              "convert text to voice", "synthesize speech"],
             "task":         "text-to-speech",
-            "queries":      ["text to speech", "tts", "coqui", "xtts", "speecht5"],
-            "boost":        ["tts", "coqui"],
+            "queries":      ["text to speech", "tts", "voice synthesis"],
+            "boost":        ["tts", "voice"],
         },
         # music / sound generation — text → music/audio
         {
@@ -570,8 +570,8 @@ def search_best_llms(
             "exclude_any":  ["transcribe", "speech to text", "recognize speech", "tts",
                              "text to speech"],
             "task":         "text-to-audio",
-            "queries":      ["musicgen", "audio generation", "music", "audiocraft"],
-            "boost":        ["musicgen", "audiocraft"],
+            "queries":      ["music generation", "audio generation"],
+            "boost":        ["music", "audio"],
         },
         # audio classification
         {
@@ -579,7 +579,7 @@ def search_best_llms(
                              "identify sound", "music genre", "emotion in voice",
                              "audio tag", "sound recognition"],
             "task":         "audio-classification",
-            "queries":      ["audio classification", "sound classification", "ast"],
+            "queries":      ["audio classification", "sound classification"],
             "boost":        ["classification", "audio"],
         },
         # ── text tasks ───────────────────────────────────────────────────────────
@@ -588,7 +588,7 @@ def search_best_llms(
             "match_any":    ["translate", "translation", "convert language",
                              "language translation", "multilingual translate", "nllb", "opus-mt"],
             "task":         "translation",
-            "queries":      ["translation", "multilingual", "nllb", "opus-mt", "marian"],
+            "queries":      ["translation", "multilingual"],
             "boost":        ["translation", "multilingual"],
         },
         # summarization
@@ -596,8 +596,8 @@ def search_best_llms(
             "match_any":    ["summarize", "summarization", "condense", "shorten text",
                              "tldr", "key points", "abstract", "extract summary"],
             "task":         "summarization",
-            "queries":      ["summarization", "bart", "pegasus", "led"],
-            "boost":        ["summarization", "bart"],
+            "queries":      ["summarization", "abstractive"],
+            "boost":        ["summarization", "abstractive"],
         },
         # sentence similarity / embeddings
         {
@@ -605,8 +605,8 @@ def search_best_llms(
                              "vector search", "retrieval", "compare text", "dense retrieval",
                              "sentence encoder", "bi-encoder", "sbert", "bge", "e5"],
             "task":         "sentence-similarity",
-            "queries":      ["sentence similarity", "embedding", "sbert", "e5", "bge"],
-            "boost":        ["embedding", "sbert"],
+            "queries":      ["embedding", "sentence similarity"],
+            "boost":        ["embedding", "retrieval"],
         },
         # NER / token classification
         {
@@ -614,8 +614,8 @@ def search_best_llms(
                              "pos tagging", "token classification", "extract entities",
                              "information extraction"],
             "task":         "token-classification",
-            "queries":      ["ner", "named entity recognition", "bert ner", "token classification"],
-            "boost":        ["ner", "bert"],
+            "queries":      ["named entity recognition", "token classification"],
+            "boost":        ["ner", "entity"],
         },
         # extractive question answering (text context, not image)
         {
@@ -623,16 +623,16 @@ def search_best_llms(
                              "answer from context", "extract answer", "squad", "qa"],
             "exclude_any":  ["image", "picture", "photo", "visual", "video", "audio"],
             "task":         "question-answering",
-            "queries":      ["question answering", "bert qa", "roberta squad", "extractive qa"],
-            "boost":        ["qa", "squad"],
+            "queries":      ["question answering", "extractive"],
+            "boost":        ["qa", "extractive"],
         },
         # fill-mask
         {
             "match_any":    ["fill mask", "fill blank", "masked language", "predict token",
                              "mlm", "bert mask"],
             "task":         "fill-mask",
-            "queries":      ["bert", "roberta", "fill mask", "masked language model"],
-            "boost":        ["bert", "roberta"],
+            "queries":      ["fill mask", "masked language"],
+            "boost":        ["masked", "fill"],
         },
         # zero-shot classification
         {
@@ -641,7 +641,7 @@ def search_best_llms(
                              "sentiment", "topic classification"],
             "exclude_any":  ["image", "picture", "photo"],
             "task":         "zero-shot-classification",
-            "queries":      ["zero shot classification", "bart mnli", "nli", "text classification"],
+            "queries":      ["zero shot classification", "nli", "text classification"],
             "boost":        ["classification", "nli"],
         },
     ]
@@ -665,31 +665,34 @@ def search_best_llms(
             break
 
     # ── Pass 1: collect raw candidates from list_models (quick) ─────────────────
+    # Search by TASK ONLY (no query string) so we get the most popular models
+    # for that task regardless of their specific name. Queries and boost_words
+    # are used only for scoring — models whose IDs/tags contain them rank higher,
+    # but every model in the task category is a candidate.
     seen_ids: set[str]  = set()
     raw: list[tuple]    = []   # (model_id, target_task, score, gated, strict)
 
-    # Build full search list: primary tasks + supplemental tasks per primary.
-    # Supplemental entries are flagged strict=True so pass 2 only keeps them
-    # when their provider mapping explicitly reports the primary task.
-    search_plan: list[tuple] = []   # (query, hf_search_task, target_task, strict)
-    for q in queries:
-        for task in tasks:
-            search_plan.append((q, task, task, False))
-            for supp in SUPPLEMENTAL_SEARCH_TASKS.get(task, []):
-                search_plan.append((q, supp, task, True))
+    # Build search plan: one entry per (hf_task, target_task, strict) pair.
+    # Supplemental tasks are searched alongside primary to catch capable models
+    # that are tagged with a different primary pipeline_tag on HF.
+    search_plan: list[tuple] = []   # (hf_search_task, target_task, strict)
+    for task in tasks:
+        search_plan.append((task, task, False))
+        for supp in SUPPLEMENTAL_SEARCH_TASKS.get(task, []):
+            search_plan.append((supp, task, True))
 
     total_searches = len(search_plan)
-    for search_num, (q, hf_task, target_task, strict) in enumerate(search_plan, 1):
+    for search_num, (hf_task, target_task, strict) in enumerate(search_plan, 1):
         label = f"{hf_task}→{target_task}" if strict else hf_task
-        emit("searching", f"Searching for '{q}' ({label}) [{search_num}/{total_searches}]...")
+        emit("searching", f"Fetching top models for task '{label}' [{search_num}/{total_searches}]...")
         try:
             models = api.list_models(
-                search=q, task=hf_task,
+                task=hf_task,
                 sort="downloads", direction=-1,
                 limit=limit, full=True,
             )
         except TypeError:
-            models = api.list_models(search=q, filter=hf_task, limit=limit, full=True)
+            models = api.list_models(filter=hf_task, limit=limit, full=True)
 
         for model in models:
             mid = model.modelId
@@ -702,7 +705,9 @@ def search_best_llms(
                 (model.downloads or 0) * SCORE_WEIGHT_DOWNLOADS
                 + (model.likes or 0) * SCORE_WEIGHT_LIKES
             )
-            for w in boost_words:
+            # Boost models whose name/tags contain description-relevant terms
+            all_boost = boost_words + queries
+            for w in all_boost:
                 if w.lower() in mid.lower() or w.lower() in " ".join(tags).lower():
                     score += SCORE_BOOST_KEYWORD
 

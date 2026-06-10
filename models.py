@@ -19,3 +19,4 @@ class ModelSuggestion:
     pipeline_tag: str | None = None
     tags: list = field(default_factory=list)
     gated: bool = False
+    license: str | None = None

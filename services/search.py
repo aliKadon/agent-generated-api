@@ -275,6 +275,7 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
         "has_chat_template": False,
         "pipeline_tag": None,
         "tags": [],
+        "license": None,
     }
     try:
         info = api.model_info(model_id, expand="inferenceProviderMapping")
@@ -286,6 +287,9 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
             ind in tag_text or ind in model_id.lower()
             for ind in CHAT_TEMPLATE_INDICATORS
         )
+        license_tags = [t for t in result["tags"] if t.startswith("license:")]
+        if license_tags:
+            result["license"] = license_tags[0].replace("license:", "")
 
         # Try multiple attribute names — huggingface_hub changed this in newer versions
         mapping = (
@@ -296,13 +300,24 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
         if not mapping:
             return result
 
-        items = mapping.values() if isinstance(mapping, dict) else list(mapping)
+        # Normalise to list of (provider_name, details_dict) pairs regardless of
+        # whether huggingface_hub returns a plain dict or a list of objects.
+        if isinstance(mapping, dict):
+            items = list(mapping.items())   # [("fal-ai", {"status": "live", ...}), ...]
+        else:
+            # older huggingface_hub versions may return a list of objects that
+            # each carry a "provider" attribute
+            items = [
+                (
+                    (p.get("provider") if isinstance(p, dict) else getattr(p, "provider", None)),
+                    p,
+                )
+                for p in mapping
+            ]
 
-        # Log the first entry so we can see the real status value in Render logs
+        # Log the first entry so we can see the real structure in Render logs
         if items:
-            first = next(iter(items))
-            raw_status = first.get("status") if isinstance(first, dict) else getattr(first, "status", None)
-            print(f"  [DEBUG] {model_id} provider status value: {raw_status!r}")
+            print(f"  [DEBUG] {model_id} first provider entry: {items[0]!r}")
 
         # "live" is the historic value; accept any non-error/disabled status
         _DEAD_STATUSES = {"error", "disabled", "unsupported", "offline", "unavailable", None}
@@ -314,10 +329,9 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
         any_prov   = None   # first live provider regardless of task
         any_ptask  = None
 
-        for pd in items:
+        for prov, pd in items:
             status = pd.get("status") if isinstance(pd, dict) else getattr(pd, "status", None)
-            prov   = pd.get("provider") if isinstance(pd, dict) else getattr(pd, "provider", None)
-            ptask  = pd.get("task") if isinstance(pd, dict) else getattr(pd, "task", None)
+            ptask  = pd.get("task")   if isinstance(pd, dict) else getattr(pd, "task",   None)
 
             if status in _DEAD_STATUSES or not prov:
                 continue
@@ -372,6 +386,9 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
                     ind in tag_text or ind in model_id.lower()
                     for ind in CHAT_TEMPLATE_INDICATORS
                 )
+                license_tags = [t for t in result["tags"] if t.startswith("license:")]
+                if license_tags:
+                    result["license"] = license_tags[0].replace("license:", "")
 
                 mapping = data.get("inferenceProviderMapping") or {}
                 _DEAD_STATUSES = {"error", "disabled", "unsupported", "offline", "unavailable", None}
@@ -736,6 +753,7 @@ def search_best_llms(
             pipeline_tag=mi["pipeline_tag"],
             tags=mi["tags"],
             gated=gated,
+            license=mi.get("license"),
         ))
 
     emit("ranking", f"Ranking {len(suggestions)} models by score and availability...")

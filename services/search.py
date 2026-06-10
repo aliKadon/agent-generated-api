@@ -11,6 +11,8 @@ import json
 import os
 import sys
 
+import requests as _requests
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from huggingface_hub import HfApi, InferenceClient
@@ -352,7 +354,68 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
                 result["inferred_method"] = TASK_TO_METHOD.get(actual, "text_generation")
 
     except Exception as e:
-        print(f"  ℹ️  model_info failed for {model_id}: {e}")
+        print(f"  ℹ️  model_info failed for {model_id}: {e} — trying direct HF API fallback")
+        # huggingface_hub raises GatedRepoError for gated models even on metadata
+        # requests. The raw HF API endpoint serves inferenceProviderMapping publicly
+        # (it's shown on the model page without login), so we bypass the client.
+        try:
+            url = f"https://huggingface.co/api/models/{model_id}?expand[]=inferenceProviderMapping"
+            headers = {"Authorization": f"Bearer {os.getenv('HF_TOKEN', '')}"}
+            resp = _requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                result["pipeline_tag"] = data.get("pipeline_tag")
+                result["tags"] = data.get("tags") or []
+
+                tag_text = " ".join(result["tags"]).lower()
+                result["has_chat_template"] = any(
+                    ind in tag_text or ind in model_id.lower()
+                    for ind in CHAT_TEMPLATE_INDICATORS
+                )
+
+                mapping = data.get("inferenceProviderMapping") or {}
+                _DEAD_STATUSES = {"error", "disabled", "unsupported", "offline", "unavailable", None}
+
+                best_prov  = None
+                best_ptask = None
+                any_prov   = None
+                any_ptask  = None
+
+                for prov_name, pd in mapping.items():
+                    status = pd.get("status") if isinstance(pd, dict) else None
+                    ptask  = pd.get("task")   if isinstance(pd, dict) else None
+
+                    if status in _DEAD_STATUSES:
+                        continue
+
+                    if any_prov is None:
+                        any_prov  = prov_name
+                        any_ptask = ptask
+
+                    if ptask == search_task:
+                        best_prov  = prov_name
+                        best_ptask = ptask
+                        break
+
+                chosen_prov  = best_prov  or (None if strict_task else any_prov)
+                chosen_ptask = best_ptask or (None if strict_task else any_ptask)
+
+                if chosen_prov:
+                    actual = chosen_ptask or search_task
+                    result["provider"] = chosen_prov
+                    result["supported_task"] = actual
+                    search_method = TASK_TO_METHOD.get(search_task, "text_generation")
+                    if actual == "conversational":
+                        result["inferred_method"] = "chat_completion"
+                    elif actual == "text-generation" and result["has_chat_template"]:
+                        result["inferred_method"] = "chat_completion"
+                    elif search_method != "text_generation":
+                        result["inferred_method"] = search_method
+                        result["supported_task"]  = search_task
+                    else:
+                        result["inferred_method"] = TASK_TO_METHOD.get(actual, "text_generation")
+        except Exception as e2:
+            print(f"  ℹ️  HF API fallback also failed for {model_id}: {e2}")
 
     return result
 

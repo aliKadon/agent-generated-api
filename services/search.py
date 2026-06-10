@@ -94,7 +94,10 @@ Critical distinctions — these are the most common mistakes:
   "transcribe audio"                                 →  automatic-speech-recognition (NOT text-to-speech)
   "speak text" / "text to voice"                     →  text-to-speech (NOT automatic-speech-recognition)
 
-queries: use HuggingFace model/architecture names relevant to the task, NOT generic words.
+queries: use specific model/architecture names as they appear in HuggingFace model IDs.
+  Examples: "flux" not "flux image editing", "whisper" not "speech recognition model",
+  "stable-diffusion" not "image generation", "llama" not "chat assistant".
+  Short architecture names rank much better in HF search than descriptive phrases.
 """
     try:
         r = chat_completion_with_retry(
@@ -173,14 +176,14 @@ def _keyword_fallback_plan(prompt: str) -> dict:
     # ── image generation / editing ───────────────────────────────────────────
     if _edit() and _img():
         return {"tasks": ["image-to-image"],
-                "queries": ["flux image editing", "stable diffusion img2img", "image editing"],
-                "boost_words": ["edit", "img2img", "flux"]}
+                "queries": ["flux", "img2img", "instruct-pix2pix", "controlnet"],
+                "boost_words": ["flux", "img2img", "edit"]}
 
     if (_gen() and _img()) or any(w in p for w in ["text to image", "text-to-image",
                                                      "artwork", "illustration", "صورة", "ارسم"]):
         return {"tasks": ["text-to-image"],
-                "queries": ["stable diffusion", "sdxl", "flux"],
-                "boost_words": ["diffusion", "sdxl", "flux"]}
+                "queries": ["flux", "stable-diffusion", "sdxl", "playground"],
+                "boost_words": ["flux", "sdxl", "diffusion"]}
 
     # ── video ────────────────────────────────────────────────────────────────
     if _vid():
@@ -513,8 +516,8 @@ def search_best_llms(
                              "enhance", "fix", "restore", "colorize", "upscale", "stylize",
                              "inpaint", "outpaint", "restyle"],
             "task":         "image-to-image",
-            "queries":      ["flux image editing", "stable diffusion img2img", "image editing"],
-            "boost":        ["edit", "img2img", "flux"],
+            "queries":      ["flux", "img2img", "instruct-pix2pix", "controlnet"],
+            "boost":        ["flux", "img2img", "edit"],
         },
         # ── image generation ─────────────────────────────────────────────────────
         # exclude reading/analyzing words to avoid false positives
@@ -523,12 +526,12 @@ def search_best_llms(
                              "paint", "sketch", "artwork", "illustration",
                              "text to image", "text-to-image", "generate photo",
                              "image generation", "art generation", "dalle", "midjourney",
-                             "stable diffusion", "flux image"],
+                             "stable diffusion", "flux"],
             "exclude_any":  ["read", "analyze", "describe", "understand", "caption",
                              "extract", "ocr", "edit", "modify", "question"],
             "task":         "text-to-image",
-            "queries":      ["stable diffusion", "sdxl", "flux"],
-            "boost":        ["diffusion", "sdxl", "flux"],
+            "queries":      ["flux", "stable-diffusion", "sdxl", "playground"],
+            "boost":        ["flux", "sdxl", "diffusion"],
         },
         # ── video ────────────────────────────────────────────────────────────────
         {

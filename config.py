@@ -19,24 +19,36 @@ PLANNER_MODELS = [
 # method names used in generated agent code.
 
 TASK_TO_METHOD: dict[str, str] = {
-    "text-generation":              "text_generation",
-    "conversational":               "chat_completion",
-    "text2text-generation":         "text_generation",
-    "translation":                  "text_generation",
-    "summarization":                "summarization",
-    "question-answering":           "question_answering",
-    "text-to-image":                "text_to_image",
-    "image-to-image":              "image_to_image",
-    "image-to-text":                "image_to_text",
-    "automatic-speech-recognition": "automatic_speech_recognition",
-    "text-to-speech":               "text_to_speech",
-    "text-to-audio":                "text_to_speech",
-    "audio-classification":         "audio_classification",
-    "image-classification":         "image_classification",
-    "object-detection":             "object_detection",
-    "token-classification":         "token_classification",
-    "sentence-similarity":          "sentence_similarity",
-    "fill-mask":                    "fill_mask",
+    # ── text ──────────────────────────────────────────────────────────────────
+    "text-generation":                  "text_generation",
+    "conversational":                   "chat_completion",
+    "text2text-generation":             "text_generation",
+    "translation":                      "text_generation",
+    "summarization":                    "summarization",
+    "question-answering":               "question_answering",
+    "sentence-similarity":              "sentence_similarity",
+    "feature-extraction":               "feature_extraction",
+    "fill-mask":                        "fill_mask",
+    "token-classification":             "token_classification",
+    "zero-shot-classification":         "zero_shot_classification",
+    # ── image generation / editing ────────────────────────────────────────────
+    "text-to-image":                    "text_to_image",
+    "image-to-image":                   "image_to_image",
+    # ── image understanding ───────────────────────────────────────────────────
+    "image-to-text":                    "image_to_text",
+    "visual-question-answering":        "visual_question_answering",
+    "document-question-answering":      "document_question_answering",
+    "image-classification":             "image_classification",
+    "zero-shot-image-classification":   "zero_shot_image_classification",
+    "object-detection":                 "object_detection",
+    "depth-estimation":                 "depth_estimation",
+    # ── audio ─────────────────────────────────────────────────────────────────
+    "automatic-speech-recognition":     "automatic_speech_recognition",
+    "text-to-speech":                   "text_to_speech",
+    "text-to-audio":                    "text_to_audio",
+    "audio-classification":             "audio_classification",
+    # ── video ─────────────────────────────────────────────────────────────────
+    "text-to-video":                    "text_to_video",
 }
 
 # ── Chat-template detection ───────────────────────────────────────────────────
@@ -53,12 +65,26 @@ CHAT_TEMPLATE_INDICATORS: list[str] = [
 # Used by decide_tools() to short-circuit tool selection for non-text tasks.
 
 IMAGE_AUDIO_METHODS: tuple[str, ...] = (
+    # image generation / editing — no text tools needed
     "text_to_image",
     "image_to_image",
+    # image understanding — input is an image, output is text/labels
+    "image_to_text",
+    "visual_question_answering",
+    "document_question_answering",
+    "image_classification",
+    "zero_shot_image_classification",
+    "object_detection",
+    "depth_estimation",
+    # audio — binary input/output
     "text_to_speech",
+    "text_to_audio",
     "automatic_speech_recognition",
     "audio_classification",
-    "image_classification",
+    # video generation
+    "text_to_video",
+    # embeddings — vector output, no text tools needed
+    "feature_extraction",
 )
 
 # ── Chat agent defaults ───────────────────────────────────────────────────────

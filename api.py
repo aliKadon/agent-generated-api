@@ -47,8 +47,9 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 # ── Agent file parser ──────────────────────────────────────────────────────────
 
 _METHOD_INPUT_FORMAT = {
-    "image_to_image": "image_path|||edit description",
-    "text_to_image":  "text prompt describing the image",
+    "image_to_image":             "image_path|||edit description",
+    "text_to_image":              "text prompt describing the image",
+    "document_question_answering": "file_path | question",
 }
 
 
@@ -962,22 +963,36 @@ def chat(request: ChatRequest, req: Request):
         mem_ctx       = memory_pass(request.message)
 
         # Fast-path: when a file_path is provided, find an active agent that accepts
-        # file input (input_format contains "|||") and bypass the LLM router entirely.
-        # Small LLMs reliably fail to connect "remove the red circle" → edit_images_agent
-        # even when the file path is in the message.
+        # file input and bypass the LLM router entirely.
         route_result = None
         if request.file_path:
-            _file_agents = [a for a in active_agents if "|||" in a.get("input_format", "")]
-            if len(_file_agents) == 1:
+            _ext         = os.path.splitext(request.file_path)[1].lower()
+            _is_doc_file = _ext in {".pdf", ".txt", ".docx", ".doc", ".csv", ".md"}
+
+            # Image-editing agents use "|||" in input_format
+            _img_agents = [a for a in active_agents if "|||" in a.get("input_format", "")]
+            # Document agents handle PDFs / text files
+            _doc_agents = [a for a in active_agents
+                           if a.get("method") == "document_question_answering"]
+
+            if _is_doc_file and len(_doc_agents) == 1 and not _img_agents:
                 route_result = {
                     "action": "agent",
-                    "target": _file_agents[0]["name"],
+                    "target": _doc_agents[0]["name"],
+                    "input":  request.message,
+                    "reason": "file_path (document) → direct document agent",
+                }
+                print(f"  [chat] doc fast-path → {_doc_agents[0]['name']}")
+            elif not _is_doc_file and len(_img_agents) == 1:
+                route_result = {
+                    "action": "agent",
+                    "target": _img_agents[0]["name"],
                     "input":  request.message,
                     "reason": "file_path provided → direct file-input agent",
                 }
-                print(f"  [chat] file fast-path → {_file_agents[0]['name']}")
-            elif len(_file_agents) > 1:
-                # Multiple file-input agents: pass file context to LLM to pick the right one
+                print(f"  [chat] file fast-path → {_img_agents[0]['name']}")
+            elif len(_img_agents) > 1 or len(_doc_agents) > 1:
+                # Multiple matching agents: pass file context to LLM to pick the right one
                 route_result = route(
                     f"[file_path: {request.file_path}] {request.message}"
                 )
@@ -1001,37 +1016,58 @@ def chat(request: ChatRequest, req: Request):
                 route_result = {"action": "chat", "target": None, "input": None,
                                 "reason": "unknown agent target"}
 
-        # File-input injection: agents whose input_format contains "|||" expect
-        # a file path prepended to the text, e.g. "path/to/img.png|||edit prompt".
-        # The fast-path never fires for these agents (removed from _METHOD_KEYWORDS),
-        # so the LLM router correctly detected intent.  Here we either:
-        #   (a) inject the uploaded file path when file_path was provided, or
-        #   (b) return a clear error when the agent needs a file but none was given.
+        # File-input injection: agents that need a file path injected into their input.
+        #   "|||" format → image_to_image:              "image_path|||edit prompt"
+        #   " | "  format → document_question_answering: "file_path | question"
         if route_result.get("action") == "agent":
             _target     = route_result.get("target")
             _target_cfg = next((a for a in active_agents if a["name"] == _target), None)
-            if _target_cfg and "|||" in _target_cfg.get("input_format", ""):
+
+            _needs_image_file = _target_cfg and "|||" in _target_cfg.get("input_format", "")
+            _needs_doc_file   = _target_cfg and _target_cfg.get("method") == "document_question_answering"
+
+            def _validate_upload_path(rel_path: str) -> str:
+                """Return absolute path; raise 400/404 if invalid/missing."""
+                _abs = os.path.normpath(os.path.join(_ROOT, rel_path))
+                if not (_abs.startswith(_GENERATED_IMAGES) or _abs.startswith(_GENERATED_FILES)):
+                    raise HTTPException(status_code=400,
+                        detail="file_path must reference a file uploaded via POST /files/upload")
+                if not os.path.exists(_abs):
+                    raise HTTPException(status_code=404,
+                        detail=f"Uploaded file not found on server: {rel_path}")
+                return _abs
+
+            if _needs_image_file:
                 if request.file_path:
-                    # Validate the path stays inside the allowed upload directories
-                    _abs = os.path.normpath(os.path.join(_ROOT, request.file_path))
-                    if not (_abs.startswith(_GENERATED_IMAGES) or _abs.startswith(_GENERATED_FILES)):
-                        raise HTTPException(status_code=400,
-                            detail="file_path must reference a file uploaded via POST /files/upload")
-                    if not os.path.exists(_abs):
-                        raise HTTPException(status_code=404,
-                            detail=f"Uploaded file not found on server: {request.file_path}")
+                    _abs = _validate_upload_path(request.file_path)
                     route_result = {**route_result,
                                     "input": f"{request.file_path}|||{request.message}"}
                 elif "|||" not in request.message:
-                    # No file provided and message isn't already formatted — guard here
-                    # instead of letting the agent fail with a cryptic path error.
                     reply = (
-                        f'The "{_target}" agent requires an input file.\n'
-                        f'Step 1 — upload your file:\n'
-                        f'  POST /files/upload  (form-data key: "file")\n'
+                        f'The "{_target}" agent requires an input image.\n'
+                        f'Step 1 — upload your image: POST /files/upload  (form-data key: "file")\n'
                         f'Step 2 — include the returned "file_path" in your chat request:\n'
                         f'  {{"message": "{request.message}", '
-                        f'"file_path": "<value from upload response>", '
+                        f'"file_path": "<value from upload>", '
+                        f'"session_id": "{request.session_id}"}}'
+                    )
+                    history.append({"role": "user",      "content": request.message})
+                    history.append({"role": "assistant", "content": reply})
+                    return {"reply": reply, "session_id": request.session_id, "file_url": None}
+
+            elif _needs_doc_file:
+                if request.file_path:
+                    _abs = _validate_upload_path(request.file_path)
+                    # Pass absolute path so the agent can open the file on the server
+                    route_result = {**route_result,
+                                    "input": f"{_abs} | {request.message}"}
+                elif " | " not in request.message:
+                    reply = (
+                        f'The "{_target}" agent needs a document file (PDF, TXT, etc.).\n'
+                        f'Step 1 — upload your document: POST /files/upload  (form-data key: "file")\n'
+                        f'Step 2 — include the returned "file_path" in your chat request:\n'
+                        f'  {{"message": "your question about the document", '
+                        f'"file_path": "<value from upload>", '
                         f'"session_id": "{request.session_id}"}}'
                     )
                     history.append({"role": "user",      "content": request.message})

@@ -452,15 +452,15 @@ def search_best_llms(
 
     _OVERRIDES = [
         # ── image understanding (most specific — check before generation) ────────
-        # document / pdf reading — check before generic image-to-text
+        # document / pdf reading — use text-generation LLMs so chat_completion works
         {
             "match_any":    ["document question", "answer from document", "answer from pdf",
                              "read pdf", "analyze pdf", "extract from pdf", "pdf reader",
                              "document reader", "document understanding", "read file",
                              "extract from file", "layoutlm", "donut"],
-            "task":         "document-question-answering",
-            "queries":      ["document understanding", "layout"],
-            "boost":        ["document", "layout"],
+            "task":         "text-generation",
+            "queries":      ["instruct", "qwen", "llama", "mistral"],
+            "boost":        ["instruct", "chat"],
         },
         # visual question answering — answer questions about an image
         {

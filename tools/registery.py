@@ -22,9 +22,10 @@ ALL_TOOLS: dict[str, dict] = {
         "trigger_keywords": ["time", "date", "today", "now", "current time", "what day"],
     },
     "file_reader": {
-        "description": "Read content from a local file",
-        "pip": None,
-        "trigger_keywords": ["read file", "open file", "file content", "load file"],
+        "description": "Read content from a local file (PDF, txt, docx, etc.)",
+        "pip": "pypdf",
+        "trigger_keywords": ["read file", "open file", "file content", "load file",
+                             ".pdf", ".txt", ".docx", "from file", "file path", "analyze file"],
     },
     "pdf_generator": {
         "description": "Save output as a PDF file",
@@ -108,12 +109,31 @@ def tool_datetime() -> str:
 
 "file_reader": '''\
 def tool_file_reader(filepath: str) -> str:
-    """Read a local file and return its content (first 4000 chars)."""
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            return f.read()[:4000]
-    except FileNotFoundError:
+    """Read a local file (PDF or text) and return its content (first 8000 chars). pip install pypdf"""
+    import os as _os
+    # handle "file_path | question" format — extract just the path
+    if "|" in filepath:
+        filepath = filepath.split("|", 1)[0]
+    filepath = filepath.strip().strip(\'"\').strip("\'")
+    if not _os.path.exists(filepath):
         return f"File not found: {filepath}"
+    try:
+        if filepath.lower().endswith(".pdf"):
+            try:
+                from pypdf import PdfReader as _PR
+                _rdr = _PR(filepath)
+                text = "\\n".join(p.extract_text() or "" for p in _rdr.pages)
+                return text[:8000] if text.strip() else "[PDF has no extractable text]"
+            except ImportError:
+                try:
+                    from PyPDF2 import PdfReader as _PR
+                    _rdr = _PR(filepath)
+                    text = "\\n".join(p.extract_text() or "" for p in _rdr.pages)
+                    return text[:8000] if text.strip() else "[PDF has no extractable text]"
+                except ImportError:
+                    return "[PDF reading requires: pip install pypdf]"
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()[:8000]
     except Exception as e:
         return f"file_reader error: {e}"
 ''',

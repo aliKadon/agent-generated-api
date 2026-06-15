@@ -71,7 +71,6 @@ IMAGE_AUDIO_METHODS: tuple[str, ...] = (
     # image understanding — input is an image, output is text/labels
     "image_to_text",
     "visual_question_answering",
-    "document_question_answering",
     "image_classification",
     "zero_shot_image_classification",
     "object_detection",

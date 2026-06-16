@@ -264,6 +264,48 @@ def generate_safe_agent_code(
         return client.text_generation(prompt, model=model_name,
                    max_new_tokens=plan.get("max_tokens", 800), temperature=plan.get("temperature", 0.7))'''
 
+    elif inferred_method == "document_question_answering":
+        inference_body = '''\
+        # user_input format: "file_path | question"
+        parts     = user_input.split("|", 1)
+        file_path = parts[0].strip().strip(\'"\').strip("\'")
+        question  = parts[1].strip() if len(parts) > 1 else "Please summarize this document."
+        import os as _os
+        if not file_path or not _os.path.exists(file_path):
+            return f"File not found: {file_path!r}\\nFormat: file_path | question"
+        # ── read document content ──────────────────────────────────────────
+        doc_text = ""
+        if file_path.lower().endswith(".pdf"):
+            try:
+                from pypdf import PdfReader as _PR
+                _rdr = _PR(file_path)
+                doc_text = "\\n".join(p.extract_text() or "" for p in _rdr.pages)[:8000]
+            except ImportError:
+                try:
+                    from PyPDF2 import PdfReader as _PR
+                    _rdr = _PR(file_path)
+                    doc_text = "\\n".join(p.extract_text() or "" for p in _rdr.pages)[:8000]
+                except ImportError:
+                    doc_text = "[PDF reading requires: pip install pypdf]"
+        else:
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as _f:
+                    doc_text = _f.read()[:8000]
+            except Exception as _err:
+                doc_text = f"[Could not read file: {_err}]"
+        # ── send document + question to the LLM ───────────────────────────
+        sys_msg = plan.get("final_system_prompt") or plan.get("system_prompt") or SYSTEM_PROMPT
+        if doc_text:
+            sys_msg += f"\\n\\n[Document Content]\\n{doc_text}"
+        msgs = [{"role": "system", "content": sys_msg}] + HISTORY + [{"role": "user", "content": question}]
+        response = client.chat_completion(model=model_name, messages=msgs,
+                       max_tokens=plan.get("max_tokens", 800), temperature=plan.get("temperature", 0.7))
+        reply = response.choices[0].message.content
+        HISTORY.append({"role": "user", "content": user_input})
+        HISTORY.append({"role": "assistant", "content": reply})
+        if len(HISTORY) > 20: HISTORY[:] = HISTORY[-20:]
+        return reply'''
+
     else:
         inference_body = '''\
         return f"Method {plan['method']} is handled below."'''
@@ -342,7 +384,7 @@ def generate_safe_agent_code(
         f"    print('Method  : {inferred_method}')",
         f"    print('Tools   : {tools_repr}')",
         "    while True:",
-        # image_to_image needs two separate inputs
+        # image_to_image and document_question_answering need two separate inputs
         *(
             [
                 "        image_path  = input('\\nImage path (drag & drop): ').strip().strip('\"')",
@@ -352,9 +394,19 @@ def generate_safe_agent_code(
                 "        user_input = image_path + '|||' + edit_prompt",
             ]
             if inferred_method == "image_to_image"
-            else [
-                f"        user_input = input('\\n{input_label}: ').strip()",
-            ]
+            else (
+                [
+                    "        doc_path = input('\\nDocument path (.pdf / .txt): ').strip().strip('\"')",
+                    "        doc_q    = input('Question about the document : ').strip()",
+                    "        if doc_path.lower() in ['exit','quit'] or doc_q.lower() in ['exit','quit']:",
+                    "            break",
+                    "        user_input = doc_path + ' | ' + doc_q",
+                ]
+                if inferred_method == "document_question_answering"
+                else [
+                    f"        user_input = input('\\n{input_label}: ').strip()",
+                ]
+            )
         ),
         "        if user_input.lower() in ['exit', 'quit']:",
         "            break",

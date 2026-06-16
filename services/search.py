@@ -329,8 +329,12 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
                     best_ptask = ptask
                     break
 
-            chosen_prov  = best_prov  or (None if strict_task else any_prov)
-            chosen_ptask = best_ptask or (None if strict_task else any_ptask)
+            # For specialized binary-output tasks (video, audio, image) require
+            # an exact provider task match — a wrong-task fallback would silently
+            # generate agents that call the wrong HF method and always fail.
+            _needs_exact = TASK_TO_METHOD.get(search_task, "text_generation") != "text_generation"
+            chosen_prov  = best_prov  or (None if (strict_task or _needs_exact) else any_prov)
+            chosen_ptask = best_ptask or (None if (strict_task or _needs_exact) else any_ptask)
 
             if chosen_prov:
                 actual = chosen_ptask or search_task
@@ -392,8 +396,9 @@ def get_model_full_info(api: HfApi, model_id: str, search_task: str,
                 best_prov, best_ptask = prov, ptask
                 break
 
-        chosen_prov  = best_prov  or (None if strict_task else any_prov)
-        chosen_ptask = best_ptask or (None if strict_task else any_ptask)
+        _needs_exact = TASK_TO_METHOD.get(search_task, "text_generation") != "text_generation"
+        chosen_prov  = best_prov  or (None if (strict_task or _needs_exact) else any_prov)
+        chosen_ptask = best_ptask or (None if (strict_task or _needs_exact) else any_ptask)
 
         if chosen_prov:
             actual = chosen_ptask or search_task

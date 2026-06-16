@@ -140,6 +140,22 @@ def generate_safe_agent_code(
     pip_pkgs    = [ALL_TOOLS[t]["pip"] for t in selected_tools if ALL_TOOLS[t].get("pip")]
     pip_comment = f"# pip install {' '.join(pip_pkgs)}\n" if pip_pkgs else ""
 
+    # Build ACCEPTED_EXTENSIONS from tools that handle specific file types.
+    # This variable is parsed by the orchestrator at discovery time to route
+    # uploaded files to this agent automatically.
+    _ext_tool_map: dict[str, list[str]] = {
+        "pdf_reader":  [".pdf"],
+        "docx_reader": [".docx", ".doc"],
+        "file_reader": [".txt", ".csv"],
+    }
+    accepted_exts: list[str] = []
+    for _t in selected_tools:
+        accepted_exts.extend(_ext_tool_map.get(_t, []))
+    accepted_exts_line = (
+        f"ACCEPTED_EXTENSIONS = {json.dumps(accepted_exts)}"
+        if accepted_exts else ""
+    )
+
     # ── Inference body ────────────────────────────────────────────────────────
     if inferred_method == "chat_completion":
         if has_tools:
@@ -277,7 +293,7 @@ def generate_safe_agent_code(
         f"SYSTEM_PROMPT = {system_str}",
         "",
         f"PLAN = {plan_str}",
-        "",
+        *([ accepted_exts_line, "" ] if accepted_exts_line else []),
         f"# Conversation history — keeps context across turns (max {HISTORY_MAX_MESSAGES} messages)",
         "HISTORY: list = []",
         "",

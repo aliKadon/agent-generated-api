@@ -56,6 +56,16 @@ ALL_TOOLS: dict[str, dict] = {
         "pip": "requests",
         "trigger_keywords": ["upscale", "larger", "bigger", "hd", "high resolution", "enhance"],
     },
+    "pdf_reader": {
+        "description": "Extract and read text content from a PDF file",
+        "pip": "pypdf",
+        "trigger_keywords": ["pdf", "read pdf", "analyze pdf", "extract text", "document", "parse pdf"],
+    },
+    "docx_reader": {
+        "description": "Extract and read text content from a Word document (.docx)",
+        "pip": "python-docx",
+        "trigger_keywords": ["docx", "word document", "read document", "analyze document", "word file"],
+    },
 }
 
 # ── Tool source code blocks ───────────────────────────────────────────────────
@@ -334,6 +344,42 @@ def tool_image_upscaler(image_path: str) -> str:
         return "image_upscaler requires: pip install requests"
     except Exception as e:
         return f"image_upscaler error: {e}"
+''',
+
+"pdf_reader": '''\
+def tool_pdf_reader(filepath: str) -> str:
+    """Extract text from a PDF file. pip install pypdf"""
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(filepath)
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                pages.append(text)
+        return "\\n\\n".join(pages)[:8000] if pages else "No text could be extracted from this PDF."
+    except FileNotFoundError:
+        return f"PDF not found: {filepath}"
+    except ImportError:
+        return "pdf_reader requires: pip install pypdf"
+    except Exception as e:
+        return f"pdf_reader error: {e}"
+''',
+
+"docx_reader": '''\
+def tool_docx_reader(filepath: str) -> str:
+    """Extract text from a Word .docx file. pip install python-docx"""
+    try:
+        from docx import Document
+        doc = Document(filepath)
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        return "\\n".join(paragraphs)[:8000] if paragraphs else "No text found in document."
+    except FileNotFoundError:
+        return f"Document not found: {filepath}"
+    except ImportError:
+        return "docx_reader requires: pip install python-docx"
+    except Exception as e:
+        return f"docx_reader error: {e}"
 ''',
 
 }

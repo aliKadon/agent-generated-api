@@ -43,8 +43,52 @@ ALL_AGENTS: list[dict] = []   # all agents including inactive — shown in route
 
 # Maps HF method names to a human-readable input format hint used by the router.
 _METHOD_INPUT_FORMAT = {
-    "image_to_image": "image_path|||edit description",
-    "text_to_image":  "text prompt describing the image",
+    "image_to_image":               "image_path|||edit description",
+    "text_to_image":                "text prompt describing the image",
+    "automatic_speech_recognition": "audio_file_path",
+    "image_to_text":                "image_file_path",
+    "visual_question_answering":    "image_file_path|||question",
+    "document_question_answering":  "image_file_path|||question",
+}
+
+# Maps file extensions to the capability category used for routing.
+_EXT_TO_CATEGORY: dict[str, str] = {
+    ".pdf":  "document",
+    ".docx": "document",
+    ".doc":  "document",
+    ".txt":  "document",
+    ".csv":  "document",
+    ".xlsx": "document",
+    ".png":  "image",
+    ".jpg":  "image",
+    ".jpeg": "image",
+    ".webp": "image",
+    ".gif":  "image",
+    ".bmp":  "image",
+    ".mp4":  "video",
+    ".avi":  "video",
+    ".mov":  "video",
+    ".mkv":  "video",
+    ".mp3":  "audio",
+    ".wav":  "audio",
+    ".m4a":  "audio",
+    ".flac": "audio",
+    ".ogg":  "audio",
+}
+
+# Maps HF inference method names to the file category they naturally consume.
+_METHOD_TO_FILE_CATEGORY: dict[str, str] = {
+    "image_to_image":               "image",
+    "image_to_text":                "image",
+    "visual_question_answering":    "image",
+    "image_classification":         "image",
+    "object_detection":             "image",
+    "depth_estimation":             "image",
+    "document_question_answering":  "image",
+    "automatic_speech_recognition": "audio",
+    "audio_classification":         "audio",
+    "summarization":                "document",
+    "question_answering":           "document",
 }
 
 def _extract_agent_meta(file_path: str) -> dict | None:
@@ -83,12 +127,33 @@ def _extract_agent_meta(file_path: str) -> dict | None:
         else:
             description = f"Agent using {method}"
 
+        # Determine which file categories this agent can handle.
+        # Start from the method's known category, then augment with any
+        # ACCEPTED_EXTENSIONS variable declared in the agent source.
+        file_categories: list[str] = []
+        method_cat = _METHOD_TO_FILE_CATEGORY.get(method)
+        if method_cat:
+            file_categories.append(method_cat)
+
+        ext_m = re.search(r'ACCEPTED_EXTENSIONS\s*=\s*(\[[^\]]*\])', source)
+        if ext_m:
+            try:
+                import ast as _ast
+                exts = _ast.literal_eval(ext_m.group(1))
+                for ext in exts:
+                    cat = _EXT_TO_CATEGORY.get(ext.lower())
+                    if cat and cat not in file_categories:
+                        file_categories.append(cat)
+            except Exception:
+                pass
+
         return {
-            "name":         name,
-            "description":  description,
-            "file":         os.path.relpath(file_path, _ROOT).replace("\\", "/"),
-            "input_format": _METHOD_INPUT_FORMAT.get(method, "text"),
-            "method":       method,
+            "name":           name,
+            "description":    description,
+            "file":           os.path.relpath(file_path, _ROOT).replace("\\", "/"),
+            "input_format":   _METHOD_INPUT_FORMAT.get(method, "text"),
+            "method":         method,
+            "file_categories": file_categories,
         }
     except Exception as e:
         print(f"  [discovery] skipping {file_path}: {e}")
@@ -280,10 +345,14 @@ def _router_system_prompt() -> str:
     # selected for execution.  Routing to an inactive agent is treated as "chat"
     # and the synthesizer will tell the user it's unavailable.
     if AGENTS:
-        lines = [
-            f'  - {a["name"]}: {a["description"]}  [input format: {a["input_format"]}]'
-            for a in AGENTS
-        ]
+        lines = []
+        for a in AGENTS:
+            cats = a.get("file_categories", [])
+            cats_tag = f'  [accepts: {", ".join(cats)}]' if cats else ""
+            lines.append(
+                f'  - {a["name"]}: {a["description"]}  '
+                f'[input format: {a["input_format"]}]{cats_tag}'
+            )
         agents_block = "\n".join(lines)
     else:
         agents_block = "  (none — no agent files found)"

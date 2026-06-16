@@ -47,9 +47,95 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 # ── Agent file parser ──────────────────────────────────────────────────────────
 
 _METHOD_INPUT_FORMAT = {
-    "image_to_image": "image_path|||edit description",
-    "text_to_image":  "text prompt describing the image",
+    "image_to_image":               "image_path|||edit description",
+    "text_to_image":                "text prompt describing the image",
+    "automatic_speech_recognition": "audio_file_path",
+    "image_to_text":                "image_file_path",
+    "visual_question_answering":    "image_file_path|||question",
+    "document_question_answering":  "image_file_path|||question",
 }
+
+# Maps file extensions to the capability category used for routing.
+# Kept in sync with orchestrator_agent._EXT_TO_CATEGORY.
+_EXT_TO_CATEGORY: dict[str, str] = {
+    ".pdf":  "document",
+    ".docx": "document",
+    ".doc":  "document",
+    ".txt":  "document",
+    ".csv":  "document",
+    ".xlsx": "document",
+    ".png":  "image",
+    ".jpg":  "image",
+    ".jpeg": "image",
+    ".webp": "image",
+    ".gif":  "image",
+    ".bmp":  "image",
+    ".mp4":  "video",
+    ".avi":  "video",
+    ".mov":  "video",
+    ".mkv":  "video",
+    ".mp3":  "audio",
+    ".wav":  "audio",
+    ".m4a":  "audio",
+    ".flac": "audio",
+    ".ogg":  "audio",
+}
+
+# Maps HF method names to file category — mirrors orchestrator_agent.
+_METHOD_TO_FILE_CATEGORY: dict[str, str] = {
+    "image_to_image":               "image",
+    "image_to_text":                "image",
+    "visual_question_answering":    "image",
+    "image_classification":         "image",
+    "object_detection":             "image",
+    "depth_estimation":             "image",
+    "document_question_answering":  "image",
+    "automatic_speech_recognition": "audio",
+    "audio_classification":         "audio",
+    "summarization":                "document",
+    "question_answering":           "document",
+}
+
+
+def _extract_file_content(file_path: str) -> str | None:
+    """
+    Extract readable text from a document uploaded via POST /files/upload.
+    Returns None for file types that don't need server-side text extraction
+    (images/audio/video are passed as file paths directly to the agent).
+    """
+    abs_path = os.path.normpath(os.path.join(_ROOT, file_path))
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext == ".pdf":
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(abs_path)
+            pages = [p.extract_text() for p in reader.pages if p.extract_text()]
+            return "\n\n".join(pages)[:8000] if pages else None
+        except ImportError:
+            return "[PDF extraction requires: pip install pypdf]"
+        except Exception as e:
+            return f"[Could not extract PDF text: {e}]"
+
+    if ext in (".docx",):
+        try:
+            from docx import Document
+            doc = Document(abs_path)
+            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            return text[:8000] if text else None
+        except ImportError:
+            return "[DOCX extraction requires: pip install python-docx]"
+        except Exception as e:
+            return f"[Could not extract Word document text: {e}]"
+
+    if ext in (".txt", ".csv", ".xlsx"):
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()[:8000]
+        except Exception as e:
+            return f"[Could not read file: {e}]"
+
+    return None
 
 
 def _parse_agent_file(file_path: str) -> dict | None:
@@ -80,13 +166,30 @@ def _parse_agent_file(file_path: str) -> dict | None:
         else:
             description = f"Agent using {method}"
 
+        # Compute file_categories from method + any ACCEPTED_EXTENSIONS in source.
+        file_categories: list[str] = []
+        method_cat = _METHOD_TO_FILE_CATEGORY.get(method)
+        if method_cat:
+            file_categories.append(method_cat)
+        ext_m = re.search(r'ACCEPTED_EXTENSIONS\s*=\s*(\[[^\]]*\])', source)
+        if ext_m:
+            try:
+                import ast as _ast
+                for ext in _ast.literal_eval(ext_m.group(1)):
+                    cat = _EXT_TO_CATEGORY.get(ext.lower())
+                    if cat and cat not in file_categories:
+                        file_categories.append(cat)
+            except Exception:
+                pass
+
         return {
-            "name":         name,
-            "description":  description,
-            "method":       method,
-            "input_format": _METHOD_INPUT_FORMAT.get(method, "text"),
-            "file_path":    os.path.relpath(file_path, _ROOT).replace("\\", "/"),
-            "source_code":  source,
+            "name":            name,
+            "description":     description,
+            "method":          method,
+            "input_format":    _METHOD_INPUT_FORMAT.get(method, "text"),
+            "file_path":       os.path.relpath(file_path, _ROOT).replace("\\", "/"),
+            "source_code":     source,
+            "file_categories": file_categories,
         }
     except Exception as e:
         print(f"[sync] skipping {file_path}: {e}")
@@ -961,26 +1064,46 @@ def chat(request: ChatRequest, req: Request):
         history       = _CHAT_SESSIONS.setdefault(request.session_id, [])
         mem_ctx       = memory_pass(request.message)
 
-        # Fast-path: when a file_path is provided, find an active agent that accepts
-        # file input (input_format contains "|||") and bypass the LLM router entirely.
-        # Small LLMs reliably fail to connect "remove the red circle" → edit_images_agent
-        # even when the file path is in the message.
+        # Fast-path: when a file_path is provided, use the file extension to find
+        # an active agent that handles that file category, bypassing the LLM router.
+        # Small LLMs reliably fail to match "analyze this PDF" → the correct agent.
         route_result = None
         if request.file_path:
-            _file_agents = [a for a in active_agents if "|||" in a.get("input_format", "")]
-            if len(_file_agents) == 1:
-                route_result = {
-                    "action": "agent",
-                    "target": _file_agents[0]["name"],
-                    "input":  request.message,
-                    "reason": "file_path provided → direct file-input agent",
-                }
-                print(f"  [chat] file fast-path → {_file_agents[0]['name']}")
-            elif len(_file_agents) > 1:
-                # Multiple file-input agents: pass file context to LLM to pick the right one
-                route_result = route(
-                    f"[file_path: {request.file_path}] {request.message}"
-                )
+            _ext      = os.path.splitext(request.file_path)[1].lower()
+            _category = _EXT_TO_CATEGORY.get(_ext)
+
+            if _category:
+                _candidates = [
+                    a for a in active_agents
+                    if _category in a.get("file_categories", [])
+                ]
+                if len(_candidates) == 1:
+                    route_result = {
+                        "action": "agent",
+                        "target": _candidates[0]["name"],
+                        "input":  request.message,
+                        "reason": f"ext={_ext} category={_category} → direct match",
+                    }
+                    print(f"  [chat] ext fast-path ({_ext}) → {_candidates[0]['name']}")
+                elif len(_candidates) > 1:
+                    # Multiple agents handle this category — let the LLM pick among them
+                    route_result = route(
+                        f"[uploaded {_category} file ({_ext})] {request.message}"
+                    )
+                else:
+                    # No active agent handles this file type
+                    _ext_label = _ext.lstrip(".")
+                    reply = (
+                        f"I don't have an active agent that can handle {_ext_label.upper()} files.\n"
+                        f"You can create one: POST /agents/generate/start with a description like\n"
+                        f'  "agent that reads and analyzes {_ext_label} {_category}s"'
+                    )
+                    history.append({"role": "user",      "content": request.message})
+                    history.append({"role": "assistant", "content": reply})
+                    return {"reply": reply, "session_id": request.session_id, "file_url": None}
+            else:
+                # Unknown extension — fall through to the LLM router with file context
+                route_result = route(f"[file_path: {request.file_path}] {request.message}")
 
         if route_result is None:
             route_result = route(request.message)
@@ -1001,42 +1124,60 @@ def chat(request: ChatRequest, req: Request):
                 route_result = {"action": "chat", "target": None, "input": None,
                                 "reason": "unknown agent target"}
 
-        # File-input injection: agents whose input_format contains "|||" expect
-        # a file path prepended to the text, e.g. "path/to/img.png|||edit prompt".
-        # The fast-path never fires for these agents (removed from _METHOD_KEYWORDS),
-        # so the LLM router correctly detected intent.  Here we either:
-        #   (a) inject the uploaded file path when file_path was provided, or
-        #   (b) return a clear error when the agent needs a file but none was given.
+        # File injection: prepare the right input format for the target agent
+        # based on the file category it handles.
+        #   image   → "file_path|||user message"  (agent reads bytes itself)
+        #   document → server extracts text, injects as context before the message
+        #   audio/video → absolute file path passed directly to the agent
+        # Also guards the reverse case: agent requires a file but none was uploaded.
         if route_result.get("action") == "agent":
             _target     = route_result.get("target")
             _target_cfg = next((a for a in active_agents if a["name"] == _target), None)
-            if _target_cfg and "|||" in _target_cfg.get("input_format", ""):
-                if request.file_path:
-                    # Validate the path stays inside the allowed upload directories
-                    _abs = os.path.normpath(os.path.join(_ROOT, request.file_path))
-                    if not (_abs.startswith(_GENERATED_IMAGES) or _abs.startswith(_GENERATED_FILES)):
-                        raise HTTPException(status_code=400,
-                            detail="file_path must reference a file uploaded via POST /files/upload")
-                    if not os.path.exists(_abs):
-                        raise HTTPException(status_code=404,
-                            detail=f"Uploaded file not found on server: {request.file_path}")
+            _cats       = (_target_cfg or {}).get("file_categories", [])
+
+            if _cats and request.file_path:
+                _abs = os.path.normpath(os.path.join(_ROOT, request.file_path))
+                if not (_abs.startswith(_GENERATED_IMAGES) or _abs.startswith(_GENERATED_FILES)):
+                    raise HTTPException(status_code=400,
+                        detail="file_path must reference a file uploaded via POST /files/upload")
+                if not os.path.exists(_abs):
+                    raise HTTPException(status_code=404,
+                        detail=f"Uploaded file not found on server: {request.file_path}")
+
+                if "image" in _cats:
                     route_result = {**route_result,
                                     "input": f"{request.file_path}|||{request.message}"}
-                elif "|||" not in request.message:
-                    # No file provided and message isn't already formatted — guard here
-                    # instead of letting the agent fail with a cryptic path error.
-                    reply = (
-                        f'The "{_target}" agent requires an input file.\n'
-                        f'Step 1 — upload your file:\n'
-                        f'  POST /files/upload  (form-data key: "file")\n'
-                        f'Step 2 — include the returned "file_path" in your chat request:\n'
-                        f'  {{"message": "{request.message}", '
-                        f'"file_path": "<value from upload response>", '
-                        f'"session_id": "{request.session_id}"}}'
-                    )
-                    history.append({"role": "user",      "content": request.message})
-                    history.append({"role": "assistant", "content": reply})
-                    return {"reply": reply, "session_id": request.session_id, "file_url": None}
+                elif "document" in _cats:
+                    _doc_text = _extract_file_content(request.file_path)
+                    if _doc_text:
+                        _fname    = os.path.basename(request.file_path)
+                        _injected = (
+                            f"[Document: {_fname}]\n{_doc_text}\n\n---\n{request.message}"
+                        )
+                        route_result = {**route_result, "input": _injected}
+                elif "audio" in _cats or "video" in _cats:
+                    route_result = {**route_result, "input": _abs}
+
+            elif _cats and not request.file_path:
+                _ext_hints = {
+                    "document": ".pdf, .docx, .txt",
+                    "image":    ".png, .jpg, .webp",
+                    "audio":    ".mp3, .wav",
+                    "video":    ".mp4, .mov",
+                }
+                _needed = " or ".join(_ext_hints.get(c, c) for c in _cats)
+                reply = (
+                    f'The "{_target}" agent requires a file ({_needed}).\n'
+                    f'Step 1 — upload your file:\n'
+                    f'  POST /files/upload  (form-data key: "file")\n'
+                    f'Step 2 — include the returned "file_path" in your chat request:\n'
+                    f'  {{"message": "{request.message}", '
+                    f'"file_path": "<value from upload response>", '
+                    f'"session_id": "{request.session_id}"}}'
+                )
+                history.append({"role": "user",      "content": request.message})
+                history.append({"role": "assistant", "content": reply})
+                return {"reply": reply, "session_id": request.session_id, "file_url": None}
 
         action_result = execute(route_result, request.message)
         reply         = synthesize(request.message, action_result, mem_ctx, route_action=route_result.get("action", "chat"))

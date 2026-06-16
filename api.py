@@ -1032,7 +1032,7 @@ class ChatResponse(BaseModel):
     reply:      str
     session_id: str
     file_url:   str | None = None
-    _debug:     dict | None = None  # routing + agent result info — always present
+    debug:      dict | None = None  # routing + agent result info (always present)
 
 
 @app.post("/chat", response_model=ChatResponse, summary="Chat with the orchestrator agent")
@@ -1186,10 +1186,35 @@ def chat(request: ChatRequest, req: Request):
                 return {"reply": reply, "session_id": request.session_id, "file_url": None}
 
         action_result = execute(route_result, request.message)
-        reply         = synthesize(request.message, action_result, mem_ctx, route_action=route_result.get("action", "chat"))
 
         print(f"  [chat] route={route_result}")
         print(f"  [chat] action_result={action_result!r}")
+
+        _debug_info = {
+            "action":       route_result.get("action"),
+            "target_agent": route_result.get("target"),
+            "reason":       route_result.get("reason"),
+            "agent_result": action_result[:500] if action_result else None,
+        }
+
+        # If the agent returned a hard error string, skip the synthesizer entirely
+        # so small LLMs can't hallucinate over it.  Surface the raw error directly.
+        _agent_error = (
+            action_result
+            if action_result and action_result.startswith(f"Agent '{route_result.get('target')}' error:")
+            else None
+        )
+        if _agent_error:
+            history.append({"role": "user",      "content": request.message})
+            history.append({"role": "assistant", "content": _agent_error})
+            return {
+                "reply":      _agent_error,
+                "session_id": request.session_id,
+                "file_url":   None,
+                "debug":      _debug_info,
+            }
+
+        reply = synthesize(request.message, action_result, mem_ctx, route_action=route_result.get("action", "chat"))
 
         history.append({"role": "user",      "content": request.message})
         history.append({"role": "assistant", "content": reply})
@@ -1206,12 +1231,7 @@ def chat(request: ChatRequest, req: Request):
             "reply":      reply,
             "session_id": request.session_id,
             "file_url":   file_url,
-            "_debug": {
-                "action":       route_result.get("action"),
-                "target_agent": route_result.get("target"),
-                "reason":       route_result.get("reason"),
-                "agent_result": action_result[:500] if action_result else None,
-            },
+            "debug":      _debug_info,
         }
 
     except Exception as e:

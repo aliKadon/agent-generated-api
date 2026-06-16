@@ -1032,6 +1032,7 @@ class ChatResponse(BaseModel):
     reply:      str
     session_id: str
     file_url:   str | None = None
+    _debug:     dict | None = None  # routing + agent result info — always present
 
 
 @app.post("/chat", response_model=ChatResponse, summary="Chat with the orchestrator agent")
@@ -1201,7 +1202,17 @@ def chat(request: ChatRequest, req: Request):
         # hallucinates "Image saved: generated_images/..." in its text.
         file_url = _extract_file_url(action_result, base)
         print(f"  [chat] file_url={file_url!r}")
-        return {"reply": reply, "session_id": request.session_id, "file_url": file_url}
+        return {
+            "reply":      reply,
+            "session_id": request.session_id,
+            "file_url":   file_url,
+            "_debug": {
+                "action":       route_result.get("action"),
+                "target_agent": route_result.get("target"),
+                "reason":       route_result.get("reason"),
+                "agent_result": action_result[:500] if action_result else None,
+            },
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

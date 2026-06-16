@@ -379,16 +379,21 @@ async def upload_file(file: UploadFile = File(...), req: Request = None):
 
 # Patterns to extract a generated file path from an agent's reply string.
 # Each entry: (compiled regex, url sub-path)
+# More-specific patterns come first so the fallback generic one doesn't shadow them.
 _FILE_URL_PATTERNS = [
-    # image_editor_agent: "Edited image saved: generated_images/timestamp_name.png"
+    # image agents: "Edited image saved: generated_images/timestamp_name.png"
     (re.compile(r'generated_images[/\\]([\w\-. ]+\.(?:png|jpg|jpeg|webp|gif))', re.I), "images"),
-    # text_to_image agents: "Image saved to generated_image.png" (root dir)
+    # text_to_image root-dir saves: "Image saved to generated_image.png"
     (re.compile(r'saved to\s+([\w\-. ]+\.(?:png|jpg|jpeg|webp|gif))', re.I), "images"),
-    # PDF: "PDF saved: generated_files/xxx.pdf"
+    # audio agents: "Audio saved: generated_files/20240101_hello.wav"
+    (re.compile(r'generated_files[/\\]([\w\-. ]+\.(?:wav|mp3|ogg|flac|m4a))', re.I), "docs"),
+    # video agents: "Video saved: generated_files/timestamp_clip.mp4"
+    (re.compile(r'generated_files[/\\]([\w\-. ]+\.(?:mp4|avi|mov|mkv|webm))', re.I), "docs"),
+    # PDF agents: "PDF saved: generated_files/report.pdf"
     (re.compile(r'generated_files[/\\]([\w\-. ]+\.pdf)', re.I), "docs"),
-    # Fallback PDF: "PDF saved: output.pdf"
+    # Fallback PDF root-dir: "PDF saved: output.pdf"
     (re.compile(r'PDF saved[:\s]+([\w\-. ]+\.pdf)', re.I), "docs"),
-    # Any other known file extension mentioned in reply
+    # Generic fallback for any other saved file with a known extension
     (re.compile(r'saved[:\s]+([\w\-./\\]+\.(?:mp3|mp4|wav|csv|xlsx|zip))', re.I), "docs"),
 ]
 

@@ -405,6 +405,16 @@ _METHOD_KEYWORDS: dict[str, list[str]] = {
     # can run — only the /chat endpoint (which reads file_path from the request)
     # can do that.  The LLM router handles intent detection; api.py handles
     # the input formatting and missing-file guard.
+    "text_to_speech": [
+        "text to speech", "convert text to voice", "text to voice",
+        "read aloud", "speak this", "say this", "generate audio",
+        "convert to audio", "make it speak", "tts", "voice over",
+        "narrate", "speech synthesis",
+    ],
+    "text_to_audio": [
+        "generate sound", "create audio", "make audio", "sound effect",
+        "audio clip", "generate music", "create music",
+    ],
     "automatic_speech_recognition": [
         "transcribe", "speech to text", "convert audio", "audio to text",
         "recognize speech", "transcription",

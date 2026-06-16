@@ -306,9 +306,31 @@ def generate_safe_agent_code(
         if len(HISTORY) > 20: HISTORY[:] = HISTORY[-20:]
         return reply'''
 
+    elif inferred_method in ("text_to_speech", "text_to_audio"):
+        inference_body = '''\
+        audio_data = client.text_to_speech(user_input, model=model_name)
+        # audio_data may be bytes or a file-like object depending on the provider
+        audio_bytes = audio_data.read() if hasattr(audio_data, "read") else bytes(audio_data)
+        import os as _os
+        from datetime import datetime as _dt
+        _here = _os.path.abspath(__file__)
+        _proj_root = _os.path.dirname(_here)
+        for _ in range(5):
+            if _os.path.exists(_os.path.join(_proj_root, "api.py")):
+                break
+            _proj_root = _os.path.dirname(_proj_root)
+        out_dir  = _os.path.join(_proj_root, "generated_files")
+        _os.makedirs(out_dir, exist_ok=True)
+        ts       = _dt.now().strftime("%Y%m%d_%H%M%S")
+        safe     = "".join(c for c in user_input[:40] if c.isalnum() or c in "_-").strip() or "audio"
+        out_path = _os.path.join(out_dir, f"{ts}_{safe}.wav")
+        with open(out_path, "wb") as _f:
+            _f.write(audio_bytes)
+        return f"Audio saved: generated_files/{_os.path.basename(out_path)}"'''
+
     else:
         inference_body = '''\
-        return f"Method {plan['method']} is handled below."'''
+        return f"Method {plan[\'method\']} is not supported yet."'''
 
     # ── Render JSON values as safe string literals ────────────────────────────
     method_str   = json.dumps(inferred_method)

@@ -397,7 +397,9 @@ _METHOD_KEYWORDS: dict[str, list[str]] = {
     "text_to_video": [
         "generate video", "create video", "make video", "video of",
         "animate", "video clip", "short video", "render a video",
-        "generate a video", "create a video",
+        "generate a video", "create a video", "make a video",
+        "to video", "text to video", "convert to video",
+        "text into video", "convert text to video",
         "فيديو", "انشئ فيديو",
     ],
     # image_to_image is intentionally excluded from the fast-path.
@@ -407,6 +409,7 @@ _METHOD_KEYWORDS: dict[str, list[str]] = {
     # the input formatting and missing-file guard.
     "text_to_speech": [
         "text to speech", "convert text to voice", "text to voice",
+        "to speech", "to voice", "convert to speech",
         "read aloud", "speak this", "say this", "generate audio",
         "convert to audio", "make it speak", "tts", "voice over",
         "narrate", "speech synthesis",

@@ -27,7 +27,7 @@ load_dotenv()
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 HF_TOKEN        = os.getenv("HF_TOKEN")
-ROUTER_MODEL    = "Qwen/Qwen2.5-7B-Instruct"
+ROUTER_MODEL    = "Qwen/Qwen3-32B"
 ROUTER_PROVIDER = "together"
 
 HISTORY: list = []

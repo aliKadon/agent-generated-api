@@ -1128,19 +1128,7 @@ def chat(request: ChatRequest, req: Request):
                 route_result = route(f"[file_path: {request.file_path}] {request.message}")
 
         if route_result is None:
-            # Single chat agent shortcut — skip the LLM router entirely when unambiguous.
-            _chat_agents = [a for a in active_agents
-                            if a.get("method") == "chat_completion" and not a.get("file_categories")]
-            if len(_chat_agents) == 1:
-                route_result = {
-                    "action": "agent",
-                    "target": _chat_agents[0]["name"],
-                    "input":  request.message,
-                    "reason": "single active chat agent → direct match",
-                }
-                print(f"  [chat] single-agent fast-path → {_chat_agents[0]['name']}")
-            else:
-                route_result = route(request.message)
+            route_result = route(request.message)
 
         # If the router returned "chat" (LLM failed or couldn't identify an agent),
         # fall back to a chat_completion agent rather than returning a generic response.

@@ -453,7 +453,7 @@ def route(user_input: str) -> dict:
             ],
             max_tokens=200,
             temperature=0.2,
-            extra_body={"enable_thinking": False},
+            enable_thinking=False,
         )
         text = r.choices[0].message.content.strip()
         s = text.find("{"); e = text.rfind("}") + 1

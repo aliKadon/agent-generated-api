@@ -1129,7 +1129,8 @@ def chat(request: ChatRequest, req: Request):
 
         if route_result is None:
             # Fast-path for text messages: bypass LLM router when possible.
-            _text_agents = [a for a in active_agents if a.get("method") == "chat_completion"]
+            _text_agents = [a for a in active_agents
+                            if a.get("method") == "chat_completion" and not a.get("file_categories")]
             if len(_text_agents) == 1:
                 route_result = {
                     "action": "agent",

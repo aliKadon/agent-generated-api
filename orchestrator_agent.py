@@ -452,8 +452,6 @@ def route(user_input: str) -> dict:
                 {"role": "user",   "content": user_input},
             ],
             max_tokens=200,
-            temperature=0.2,
-            enable_thinking=False,
         )
         text = r.choices[0].message.content.strip()
         s = text.find("{"); e = text.rfind("}") + 1

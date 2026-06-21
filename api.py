@@ -1128,35 +1128,33 @@ def chat(request: ChatRequest, req: Request):
                 route_result = route(f"[file_path: {request.file_path}] {request.message}")
 
         if route_result is None:
-            # Fast-path for text messages: bypass LLM router when possible.
-            _text_agents = [a for a in active_agents
+            # Single chat agent shortcut — skip the LLM router entirely when unambiguous.
+            _chat_agents = [a for a in active_agents
                             if a.get("method") == "chat_completion" and not a.get("file_categories")]
-            if len(_text_agents) == 1:
+            if len(_chat_agents) == 1:
                 route_result = {
                     "action": "agent",
-                    "target": _text_agents[0]["name"],
+                    "target": _chat_agents[0]["name"],
                     "input":  request.message,
                     "reason": "single active chat agent → direct match",
                 }
-                print(f"  [chat] single-agent fast-path → {_text_agents[0]['name']}")
-            elif len(_text_agents) > 1:
-                # Multiple text agents — pick the best keyword match, fall back to LLM only if no match
-                _user_lower = request.message.lower()
-                _scored = [(sum(1 for w in a.get("description", "").lower().split()
-                                if w in _user_lower), a) for a in _text_agents]
-                _best_score, _best_agent = max(_scored, key=lambda x: x[0])
-                if _best_score > 0:
-                    route_result = {
-                        "action": "agent",
-                        "target": _best_agent["name"],
-                        "input":  request.message,
-                        "reason": f"best text agent keyword match (score={_best_score})",
-                    }
-                    print(f"  [chat] multi-agent fast-path → {_best_agent['name']} (score={_best_score})")
-                else:
-                    route_result = route(request.message)
+                print(f"  [chat] single-agent fast-path → {_chat_agents[0]['name']}")
             else:
                 route_result = route(request.message)
+
+        # If the router returned "chat" (LLM failed or couldn't identify an agent),
+        # fall back to a chat_completion agent rather than returning a generic response.
+        if route_result.get("action") == "chat":
+            _chat_agents = [a for a in active_agents
+                            if a.get("method") == "chat_completion" and not a.get("file_categories")]
+            if _chat_agents:
+                route_result = {
+                    "action": "agent",
+                    "target": _chat_agents[0]["name"],
+                    "input":  request.message,
+                    "reason": "chat fallback → first available chat agent",
+                }
+                print(f"  [chat] chat-action fallback → {_chat_agents[0]['name']}")
 
         # Safety net: if the router somehow picked an inactive or unknown agent,
         # block it here before execute() is called.

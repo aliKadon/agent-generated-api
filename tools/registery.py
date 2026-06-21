@@ -129,19 +129,28 @@ def tool_file_reader(filepath: str) -> str:
         return f"File not found: {filepath}"
     try:
         if filepath.lower().endswith(".pdf"):
+            _pdf_text = ""
             try:
                 from pypdf import PdfReader as _PR
                 _rdr = _PR(filepath)
-                text = "\\n".join(p.extract_text() or "" for p in _rdr.pages)
-                return text[:8000] if text.strip() else "[PDF has no extractable text]"
+                _pdf_text = "\\n".join(p.extract_text() or "" for p in _rdr.pages)
             except ImportError:
+                pass
+            except Exception:
+                pass
+            if not _pdf_text.strip():
                 try:
-                    from PyPDF2 import PdfReader as _PR
-                    _rdr = _PR(filepath)
-                    text = "\\n".join(p.extract_text() or "" for p in _rdr.pages)
-                    return text[:8000] if text.strip() else "[PDF has no extractable text]"
+                    import fitz as _fitz
+                    _doc = _fitz.open(filepath)
+                    _pdf_text = "\\n\\n".join(_p.get_text() for _p in _doc)
+                    _doc.close()
                 except ImportError:
-                    return "[PDF reading requires: pip install pypdf]"
+                    pass
+                except Exception:
+                    pass
+            if _pdf_text.strip():
+                return _pdf_text[:8000]
+            return "[PDF appears to be scanned (image-only). OCR is required to read this file.]"
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()[:8000]
     except Exception as e:

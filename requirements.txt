@@ -8,3 +8,5 @@ ddgs
 google-adk
 fpdf2
 pillow
+pypdf
+pymupdf

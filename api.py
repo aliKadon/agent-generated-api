@@ -107,13 +107,29 @@ def _extract_file_content(file_path: str) -> str | None:
     ext = os.path.splitext(file_path)[1].lower()
 
     if ext == ".pdf":
+        # Try pypdf first (text-based PDFs)
         try:
             import pypdf
             reader = pypdf.PdfReader(abs_path)
             pages = [p.extract_text() for p in reader.pages if p.extract_text()]
-            return "\n\n".join(pages)[:8000] if pages else None
+            if pages:
+                return "\n\n".join(pages)[:8000]
         except ImportError:
-            return "[PDF extraction requires: pip install pypdf]"
+            pass
+        except Exception:
+            pass
+
+        # Fallback: pymupdf — handles more PDF types including complex layouts
+        try:
+            import fitz  # pymupdf
+            doc = fitz.open(abs_path)
+            text = "\n\n".join(page.get_text() for page in doc)
+            doc.close()
+            if text.strip():
+                return text[:8000]
+            return "[PDF appears to be scanned (image-only). OCR is required to extract text from this file.]"
+        except ImportError:
+            return "[PDF extraction requires: pip install pypdf  (or pip install pymupdf for better support)]"
         except Exception as e:
             return f"[Could not extract PDF text: {e}]"
 

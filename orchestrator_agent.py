@@ -462,7 +462,7 @@ def route(user_input: str) -> dict:
     except Exception as ex:
         print(f"  [router] fallback: {ex}")
         # LLM router failed — try to find a text agent (no file requirement) to handle the message
-        _text_agents = [a for a in AGENTS if not a.get("file_categories")]
+        _text_agents = [a for a in AGENTS if a.get("method") == "chat_completion"]
         if len(_text_agents) == 1:
             print(f"  [router] fallback → single text agent: {_text_agents[0]['name']}")
             return {"action": "agent", "target": _text_agents[0]["name"],

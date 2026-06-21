@@ -27,7 +27,7 @@ load_dotenv()
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 HF_TOKEN        = os.getenv("HF_TOKEN")
-ROUTER_MODEL    = "Qwen/Qwen3-32B"
+ROUTER_MODEL    = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
 ROUTER_PROVIDER = "together"
 
 HISTORY: list = []
@@ -452,6 +452,7 @@ def route(user_input: str) -> dict:
                 {"role": "user",   "content": user_input},
             ],
             max_tokens=200,
+            temperature=0.1,
         )
         text = r.choices[0].message.content.strip()
         s = text.find("{"); e = text.rfind("}") + 1

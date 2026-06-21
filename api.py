@@ -1128,7 +1128,19 @@ def chat(request: ChatRequest, req: Request):
                 route_result = route(f"[file_path: {request.file_path}] {request.message}")
 
         if route_result is None:
-            route_result = route(request.message)
+            # Fast-path for text messages: if exactly one active agent handles text
+            # (no file_categories requirement), skip the LLM router entirely.
+            _text_agents = [a for a in active_agents if not a.get("file_categories")]
+            if len(_text_agents) == 1:
+                route_result = {
+                    "action": "agent",
+                    "target": _text_agents[0]["name"],
+                    "input":  request.message,
+                    "reason": "single active chat agent → direct match",
+                }
+                print(f"  [chat] single-agent fast-path → {_text_agents[0]['name']}")
+            else:
+                route_result = route(request.message)
 
         # Safety net: if the router somehow picked an inactive or unknown agent,
         # block it here before execute() is called.

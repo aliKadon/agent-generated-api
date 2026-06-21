@@ -461,6 +461,21 @@ def route(user_input: str) -> dict:
         return json.loads(text[s:e])
     except Exception as ex:
         print(f"  [router] fallback: {ex}")
+        # LLM router failed — try to find a text agent (no file requirement) to handle the message
+        _text_agents = [a for a in AGENTS if not a.get("file_categories")]
+        if len(_text_agents) == 1:
+            print(f"  [router] fallback → single text agent: {_text_agents[0]['name']}")
+            return {"action": "agent", "target": _text_agents[0]["name"],
+                    "input": user_input, "reason": "router error → single text agent fallback"}
+        if len(_text_agents) > 1:
+            # Pick the agent whose description best matches the message (simple keyword score)
+            user_lower = user_input.lower()
+            best = max(_text_agents, key=lambda a: sum(
+                1 for w in a.get("description", "").lower().split() if w in user_lower
+            ))
+            print(f"  [router] fallback → best text agent: {best['name']}")
+            return {"action": "agent", "target": best["name"],
+                    "input": user_input, "reason": "router error → best text agent fallback"}
         return {"action": "chat", "target": None, "input": None, "reason": "router error"}
 
 

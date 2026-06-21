@@ -1128,8 +1128,7 @@ def chat(request: ChatRequest, req: Request):
                 route_result = route(f"[file_path: {request.file_path}] {request.message}")
 
         if route_result is None:
-            # Fast-path for text messages: if exactly one active agent handles text
-            # (no file_categories requirement), skip the LLM router entirely.
+            # Fast-path for text messages: bypass LLM router when possible.
             _text_agents = [a for a in active_agents if not a.get("file_categories")]
             if len(_text_agents) == 1:
                 route_result = {
@@ -1139,6 +1138,22 @@ def chat(request: ChatRequest, req: Request):
                     "reason": "single active chat agent → direct match",
                 }
                 print(f"  [chat] single-agent fast-path → {_text_agents[0]['name']}")
+            elif len(_text_agents) > 1:
+                # Multiple text agents — pick the best keyword match, fall back to LLM only if no match
+                _user_lower = request.message.lower()
+                _scored = [(sum(1 for w in a.get("description", "").lower().split()
+                                if w in _user_lower), a) for a in _text_agents]
+                _best_score, _best_agent = max(_scored, key=lambda x: x[0])
+                if _best_score > 0:
+                    route_result = {
+                        "action": "agent",
+                        "target": _best_agent["name"],
+                        "input":  request.message,
+                        "reason": f"best text agent keyword match (score={_best_score})",
+                    }
+                    print(f"  [chat] multi-agent fast-path → {_best_agent['name']} (score={_best_score})")
+                else:
+                    route_result = route(request.message)
             else:
                 route_result = route(request.message)
 

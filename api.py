@@ -626,6 +626,12 @@ class GenerateDoneResponse(BaseModel):
     message:    str
 
 
+def _tool_agent_type(plan: dict) -> str:
+    src = str(plan.get("source_format") or "input").replace("-", "_")
+    dst = str(plan.get("target_format") or "output").replace("-", "_")
+    return f"{src}_to_{dst}_converter"
+
+
 @app.post(
     "/agents/generate/start",
     response_model=GenerateStartResponse,
@@ -634,7 +640,25 @@ class GenerateDoneResponse(BaseModel):
 def generate_start(request: GenerateStartRequest):
     import sys
     sys.path.insert(0, _ROOT)
-    from services.search import search_best_llms
+    from services.search import detect_tool_pipeline, search_best_llms
+
+    tool_plan = detect_tool_pipeline(request.description)
+    if tool_plan:
+        session_id = uuid.uuid4().hex[:10]
+        _GEN_SESSIONS[session_id] = {
+            "step":        "tool_pipeline",
+            "description": request.description,
+            "tool_plan":   tool_plan,
+        }
+        return {
+            "session_id": session_id,
+            "step":       "tool_pipeline",
+            "models":     [],
+            "message": (
+                "This can be built as a no-model tool pipeline. "
+                "Call /agents/generate/continue with this session_id and answers={} to create it."
+            ),
+        }
 
     try:
         results, _ = search_best_llms(request.description)
@@ -713,7 +737,7 @@ def generate_start(request: GenerateStartRequest):
 async def generate_start_stream(request: GenerateStartRequest):
     import sys
     sys.path.insert(0, _ROOT)
-    from services.search import search_best_llms
+    from services.search import detect_tool_pipeline, search_best_llms
 
     progress_q: queue.Queue = queue.Queue()
 
@@ -722,6 +746,28 @@ async def generate_start_stream(request: GenerateStartRequest):
             progress_q.put({"status": status, "message": message})
 
         try:
+            tool_plan = detect_tool_pipeline(request.description)
+            if tool_plan:
+                progress_q.put({
+                    "status":  "planning",
+                    "message": "Detected a deterministic tool pipeline; skipping model search.",
+                })
+                session_id = uuid.uuid4().hex[:10]
+                _GEN_SESSIONS[session_id] = {
+                    "step":        "tool_pipeline",
+                    "description": request.description,
+                    "tool_plan":   tool_plan,
+                }
+                progress_q.put({
+                    "status":     "done",
+                    "message":    "Ready to create a no-model tool pipeline agent.",
+                    "session_id": session_id,
+                    "step":       "tool_pipeline",
+                    "models":     [],
+                    "tool_pipeline": tool_plan.get("pipeline", []),
+                })
+                return
+
             results, _ = search_best_llms(request.description, progress_cb=cb)
             usable_models = [m for m in results if m.has_provider][:15]
             no_provider_fallback = False
@@ -831,6 +877,61 @@ def generate_continue(request: GenerateContinueRequest):
         raise HTTPException(
             status_code=404,
             detail=f"Session '{request.session_id}' not found. Call /agents/generate/start first.",
+        )
+
+    # ── Tool-only generation ───────────────────────────────────────────────────
+    if session["step"] == "tool_pipeline":
+        from services.generator import generate_safe_agent_code
+
+        tool_plan = dict(session["tool_plan"])
+        tools = list(tool_plan.get("pipeline", []))
+        agent_type = _tool_agent_type(tool_plan)
+        final_plan = {
+            "route": "tool",
+            "method": "tool_pipeline",
+            "agent_type": agent_type,
+            "system_prompt": (
+                f"Deterministic {tool_plan.get('source_format')} to "
+                f"{tool_plan.get('target_format')} converter."
+            ),
+            "final_system_prompt": (
+                f"Deterministic {tool_plan.get('source_format')} to "
+                f"{tool_plan.get('target_format')} converter."
+            ),
+            "input_label": "File path or text",
+            "pipeline": tools,
+            "source_format": tool_plan.get("source_format"),
+            "target_format": tool_plan.get("target_format"),
+        }
+        code = generate_safe_agent_code(
+            plan=final_plan, selected_model="tool_pipeline", provider=None,
+            supported_task="tool", inferred_method="tool_pipeline",
+            has_chat_template=False, selected_tools=tools,
+        )
+
+        out_dir = os.path.join(_ROOT, "generated_code")
+        os.makedirs(out_dir, exist_ok=True)
+        safe_name = agent_type.lower().replace(" ", "_").replace("-", "_")
+        full_path = os.path.join(out_dir, f"{safe_name}_agent.py")
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        sync_agents_to_db()
+
+        ph = "%s" if os.getenv("DATABASE_URL") else "?"
+        with _db.get_db() as conn:
+            row = _db.fetchone(conn, f"SELECT id FROM agents WHERE name = {ph}", (safe_name,))
+
+        del _GEN_SESSIONS[request.session_id]
+
+        return GenerateDoneResponse(
+            session_id = request.session_id,
+            step       = "done",
+            agent_id   = row["id"] if row else None,
+            name       = safe_name,
+            method     = "tool_pipeline",
+            file_path  = os.path.relpath(full_path, _ROOT).replace("\\", "/"),
+            message    = f"Tool pipeline agent '{safe_name}' created and saved to database.",
         )
 
     # ── Step 2 ─────────────────────────────────────────────────────────────────
@@ -1184,13 +1285,16 @@ def chat(request: ChatRequest, req: Request):
                     route_result = {**route_result,
                                     "input": f"{request.file_path}|||{request.message}"}
                 elif "document" in _cats:
-                    _doc_text = _extract_file_content(request.file_path)
-                    if _doc_text:
-                        _fname    = os.path.basename(request.file_path)
-                        _injected = (
-                            f"[Document: {_fname}]\n{_doc_text}\n\n---\n{request.message}"
-                        )
-                        route_result = {**route_result, "input": _injected}
+                    if (_target_cfg or {}).get("method") == "tool_pipeline":
+                        route_result = {**route_result, "input": _abs}
+                    else:
+                        _doc_text = _extract_file_content(request.file_path)
+                        if _doc_text:
+                            _fname    = os.path.basename(request.file_path)
+                            _injected = (
+                                f"[Document: {_fname}]\n{_doc_text}\n\n---\n{request.message}"
+                            )
+                            route_result = {**route_result, "input": _injected}
                 elif "audio" in _cats or "video" in _cats:
                     route_result = {**route_result, "input": _abs}
 

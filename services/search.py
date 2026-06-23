@@ -9,7 +9,6 @@ Responsibilities:
 
 import json
 import os
-import re
 import sys
 
 import requests as _requests
@@ -75,87 +74,12 @@ def _fetch_hf_task_catalog() -> "list | None":
 
 # ── generate_search_plan ──────────────────────────────────────────────────────
 
-_TOOL_PIPELINE_CONVERSIONS: dict[tuple[str, str], list[str]] = {
-    ("docx", "pdf"): ["docx_reader", "pdf_generator"],
-    ("doc", "pdf"): ["docx_reader", "pdf_generator"],
-    ("txt", "pdf"): ["file_reader", "pdf_generator"],
-    ("text", "pdf"): ["file_reader", "pdf_generator"],
-    ("pdf", "txt"): ["pdf_reader"],
-    ("pdf", "text"): ["pdf_reader"],
-    ("docx", "txt"): ["docx_reader"],
-    ("docx", "text"): ["docx_reader"],
-    ("doc", "txt"): ["docx_reader"],
-    ("doc", "text"): ["docx_reader"],
-}
-
-_FORMAT_ALIASES: dict[str, str] = {
-    "word": "docx",
-    "ms word": "docx",
-    "doc": "doc",
-    "docx": "docx",
-    "text": "text",
-    "txt": "txt",
-    "plain text": "text",
-    "pdf": "pdf",
-}
-
-
-def detect_tool_pipeline(prompt: str) -> dict | None:
-    """
-    Return a deterministic no-model pipeline plan when the current tool registry
-    can satisfy the request directly. Unknown conversions return None so the
-    existing model-search flow remains unchanged.
-    """
-    p = prompt.lower()
-    if not any(w in p for w in ["convert", "export", "save", "generate", "make"]):
-        return None
-
-    formats = "|".join(sorted((re.escape(k) for k in _FORMAT_ALIASES), key=len, reverse=True))
-    patterns = [
-        rf"\b({formats})\b\s*(?:file|document)?\s*(?:to|into|as)\s*\b({formats})\b",
-        rf"(?:to|into|as)\s*\b({formats})\b.*\b(?:from|of)\s*\b({formats})\b",
-    ]
-
-    src = dst = None
-    for i, pattern in enumerate(patterns):
-        m = re.search(pattern, p)
-        if not m:
-            continue
-        if i == 0:
-            src, dst = m.group(1), m.group(2)
-        else:
-            dst, src = m.group(1), m.group(2)
-        break
-
-    if not src or not dst:
-        return None
-
-    src = _FORMAT_ALIASES.get(src, src)
-    dst = _FORMAT_ALIASES.get(dst, dst)
-    pipeline = _TOOL_PIPELINE_CONVERSIONS.get((src, dst))
-    if not pipeline:
-        return None
-
-    return {
-        "route": "tool",
-        "tasks": ["other"],
-        "queries": [f"{src} to {dst} conversion"],
-        "boost_words": ["tool", "conversion"],
-        "pipeline": pipeline,
-        "source_format": src,
-        "target_format": dst,
-    }
-
 def generate_search_plan(prompt: str) -> dict:
     """
     Ask the planner LLM to produce a JSON search plan:
       { tasks, queries, boost_words }
     Falls back to keyword-based detection on any LLM error.
     """
-    tool_plan = detect_tool_pipeline(prompt)
-    if tool_plan:
-        return tool_plan
-
     client = InferenceClient(api_key=os.getenv("HF_TOKEN"))
     system = """
 You are a JSON generator. Given an AI agent description, produce a HuggingFace model search plan.
@@ -590,9 +514,6 @@ def search_best_llms(
     emit("planning", "Analyzing your request and planning the search...")
     plan = generate_search_plan(agent_prompt)
     print("\nSearch plan result:"); print(plan)
-    if plan.get("route") == "tool":
-        emit("done", "Detected a deterministic tool pipeline; no model search needed.")
-        return [], "tool"
 
     queries     = plan.get("queries",     ["chat", "instruct"])
     tasks       = plan.get("tasks",       ["text-generation"])

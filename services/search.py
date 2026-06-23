@@ -31,6 +31,47 @@ from models import ModelSuggestion
 from utils.llm import chat_completion_with_retry
 
 
+# ── [DYNAMIC FALLBACK] authoritative HF task catalog ──────────────────────────
+# Fetched once from HuggingFace's public /api/tasks endpoint so the planner can
+# choose from the COMPLETE, self-updating list of valid pipeline tasks instead
+# of a hardcoded subset. Cached in-process; returns None on any error so callers
+# transparently fall back to the static task list baked into the prompt.
+# To revert: delete this block and the marked block inside generate_search_plan.
+_HF_TASKS_URL = "https://huggingface.co/api/tasks"
+_HF_TASK_CATALOG_CACHE: "list | None" = None
+
+
+def _fetch_hf_task_catalog() -> "list | None":
+    """Return [{'id','label','summary'}, ...] for every HF task, or None on failure."""
+    global _HF_TASK_CATALOG_CACHE
+    if _HF_TASK_CATALOG_CACHE is not None:
+        return _HF_TASK_CATALOG_CACHE
+    try:
+        resp = _requests.get(_HF_TASKS_URL, timeout=10)
+        if resp.status_code != 200:
+            print(f"[search] HF task catalog HTTP {resp.status_code} — using static list")
+            return None
+        data = resp.json()
+        catalog = []
+        for task_id, meta in data.items():
+            if not isinstance(meta, dict):
+                continue
+            summary = (meta.get("summary") or "").replace("\n", " ").strip()
+            catalog.append({
+                "id":      task_id,
+                "label":   meta.get("label") or task_id,
+                "summary": summary[:160],
+            })
+        _HF_TASK_CATALOG_CACHE = catalog or None
+        if _HF_TASK_CATALOG_CACHE:
+            print(f"[search] Loaded {len(_HF_TASK_CATALOG_CACHE)} HF tasks from {_HF_TASKS_URL}")
+        return _HF_TASK_CATALOG_CACHE
+    except Exception as ex:
+        print(f"[search] HF task catalog fetch failed ({ex}) — using static list")
+        return None
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 # ── generate_search_plan ──────────────────────────────────────────────────────
 
 def generate_search_plan(prompt: str) -> dict:
@@ -110,6 +151,25 @@ queries: use specific model/architecture names as they appear in HuggingFace mod
   "stable-diffusion" not "image generation", "llama" not "chat assistant".
   Short architecture names rank much better in HF search than descriptive phrases.
 """
+
+    # ── [DYNAMIC FALLBACK] append authoritative task catalog fetched from HF ───
+    # Gives the planner the COMPLETE, self-updating set of valid task ids (with
+    # descriptions) so it is not limited to the hardcoded list above. Self-heals
+    # when HuggingFace adds new tasks. On fetch failure the static list is used.
+    _catalog = _fetch_hf_task_catalog()
+    if _catalog:
+        _catalog_lines = "\n".join(f"  {t['id']}: {t['summary']}" for t in _catalog)
+        system += (
+            "\n\nAUTHORITATIVE TASK LIST (fetched live from HuggingFace — the COMPLETE "
+            "set of valid task ids). Choose the task id from THIS list that best matches "
+            "the agent's purpose; you may pick one not shown in the shorter list above if "
+            "it fits better:\n" + _catalog_lines +
+            "\n\nIf NONE of these tasks genuinely fit (e.g. converting text to PDF or "
+            'generating a spreadsheet — deterministic jobs no model performs), set '
+            '"tasks": ["other"].'
+        )
+    # ──────────────────────────────────────────────────────────────────────────
+
     try:
         r = chat_completion_with_retry(
             client,

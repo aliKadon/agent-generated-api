@@ -54,12 +54,23 @@ Allowed HF tasks:
   automatic-speech-recognition, text-to-speech, text-to-audio, audio-classification,
   text-to-video
 
+  other   ← use this ONLY when the request does not clearly fit ANY task above
+
 JSON schema:
 {
   "tasks": ["one-hf-task"],
   "queries": ["search term 1", "search term 2", "search term 3"],
   "boost_words": ["word1", "word2"]
 }
+
+# ── [DYNAMIC FALLBACK] ───────────────────────────────────────────────────────
+# When the agent's purpose does NOT match any allowed task above (e.g.
+# "convert text to PDF", "generate a spreadsheet", "format code", or any other
+# capability not listed), set:  "tasks": ["other"]
+# and put plain free-text search terms describing the capability in "queries"
+# (these become a HuggingFace free-text model search instead of a task filter).
+# Do NOT force an unrelated task just to fill the field — prefer "other".
+# ─────────────────────────────────────────────────────────────────────────────
 
 INTENT → TASK mapping (use the agent's PURPOSE, not just keywords):
   chat / code / write / assistant / reasoning / general help       → text-generation
@@ -680,24 +691,51 @@ def search_best_llms(
     # Build search plan: one entry per (hf_task, target_task, strict) pair.
     # Supplemental tasks are searched alongside primary to catch capable models
     # that are tagged with a different primary pipeline_tag on HF.
-    search_plan: list[tuple] = []   # (hf_search_task, target_task, strict)
+    # mode: "task"   → filter HF by pipeline task (the original behaviour)
+    #       "search" → [DYNAMIC FALLBACK] free-text model search for tasks not
+    #                  in TASK_TO_METHOD (e.g. the planner returned "other").
+    search_plan: list[tuple] = []   # (hf_search_term, target_task, strict, mode)
+    _KNOWN_TASKS = set(TASK_TO_METHOD.keys())
     for task in tasks:
-        search_plan.append((task, task, False))
-        for supp in SUPPLEMENTAL_SEARCH_TASKS.get(task, []):
-            search_plan.append((supp, task, True))
+        if task in _KNOWN_TASKS:
+            search_plan.append((task, task, False, "task"))
+            for supp in SUPPLEMENTAL_SEARCH_TASKS.get(task, []):
+                search_plan.append((supp, task, True, "task"))
+        else:
+            # ── [DYNAMIC FALLBACK] unknown / "other" task ─────────────────────
+            # There is no fixed HF task to filter on. Search HF by the planner's
+            # free-text queries and trust whatever pipeline_tag / provider task
+            # each candidate reports. target_task="other" makes
+            # get_model_full_info accept any available provider and derive the
+            # method from that provider's real reported task.
+            for q in (queries or [agent_prompt]):
+                search_plan.append((q, "other", False, "search"))
+            # ──────────────────────────────────────────────────────────────────
 
     total_searches = len(search_plan)
-    for search_num, (hf_task, target_task, strict) in enumerate(search_plan, 1):
-        label = f"{hf_task}→{target_task}" if strict else hf_task
+    for search_num, (hf_task, target_task, strict, mode) in enumerate(search_plan, 1):
+        label = (f"search:{hf_task}" if mode == "search"
+                 else (f"{hf_task}→{target_task}" if strict else hf_task))
         emit("searching", f"Fetching top models for task '{label}' [{search_num}/{total_searches}]...")
         try:
-            models = api.list_models(
-                task=hf_task,
-                sort="downloads", direction=-1,
-                limit=limit, full=True,
-            )
+            if mode == "search":
+                # [DYNAMIC FALLBACK] free-text search, no task filter
+                models = api.list_models(
+                    search=hf_task,
+                    sort="downloads", direction=-1,
+                    limit=limit, full=True,
+                )
+            else:
+                models = api.list_models(
+                    task=hf_task,
+                    sort="downloads", direction=-1,
+                    limit=limit, full=True,
+                )
         except TypeError:
-            models = api.list_models(filter=hf_task, limit=limit, full=True)
+            if mode == "search":
+                models = api.list_models(search=hf_task, limit=limit, full=True)
+            else:
+                models = api.list_models(filter=hf_task, limit=limit, full=True)
 
         for model in models:
             mid = model.modelId

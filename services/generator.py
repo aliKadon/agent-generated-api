@@ -351,8 +351,57 @@ def generate_safe_agent_code(
         return f"Audio saved: generated_files/{_os.path.basename(out_path)}"'''
 
     else:
+        # ── [DYNAMIC FALLBACK] universal handler ─────────────────────────────
+        # Any method without a dedicated template above lands here (new/unknown
+        # HF tasks, plus summarization / image_to_text / classification / etc.).
+        # It calls the InferenceClient method BY NAME and dispatches on the
+        # RESULT TYPE, so novel tasks work without a per-task template.
+        # To revert: replace this whole block with
+        #     inference_body = '''\\
+        #     return f"Method {plan['method']} is not supported yet."'''
         inference_body = '''\
-        return f"Method {plan[\'method\']} is not supported yet."'''
+        method_fn = getattr(client, plan["method"], None)
+        if method_fn is None or not callable(method_fn):
+            return "Method " + str(plan["method"]) + " is not available on this InferenceClient version."
+        # primary input passed positionally; some methods want it as `text=`
+        try:
+            result = method_fn(user_input, model=model_name)
+        except TypeError:
+            result = method_fn(text=user_input, model=model_name)
+        import os as _os, json as _json
+        from datetime import datetime as _dt
+        def _proj_dir(sub):
+            _p = _os.path.dirname(_os.path.abspath(__file__))
+            for _ in range(5):
+                if _os.path.exists(_os.path.join(_p, "api.py")):
+                    break
+                _p = _os.path.dirname(_p)
+            _d = _os.path.join(_p, sub)
+            _os.makedirs(_d, exist_ok=True)
+            return _d
+        # ── dispatch on output type (text / image / binary / structured) ────
+        if result is None:
+            return "No output returned by the model."
+        if isinstance(result, str):
+            return result
+        if hasattr(result, "save"):              # PIL.Image-like → save .png
+            _ts  = _dt.now().strftime("%Y%m%d_%H%M%S")
+            _out = _os.path.join(_proj_dir("generated_images"), _ts + "_output.png")
+            result.save(_out)
+            return "Image saved: " + _out
+        if isinstance(result, (bytes, bytearray)) or hasattr(result, "read"):
+            _data = result.read() if hasattr(result, "read") else bytes(result)
+            _m    = plan["method"]
+            _ext  = ".mp4" if "video" in _m else (".wav" if ("speech" in _m or "audio" in _m) else ".bin")
+            _ts   = _dt.now().strftime("%Y%m%d_%H%M%S")
+            _out  = _os.path.join(_proj_dir("generated_files"), _ts + "_output" + _ext)
+            with open(_out, "wb") as _f:
+                _f.write(_data)
+            return "File saved: " + _out
+        if isinstance(result, (list, dict)):     # classification / detection / NER
+            return _json.dumps(result, ensure_ascii=False, indent=2, default=str)
+        return str(result)'''
+        # ─────────────────────────────────────────────────────────────────────
 
     # ── Render JSON values as safe string literals ────────────────────────────
     method_str   = json.dumps(inferred_method)

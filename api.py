@@ -198,6 +198,10 @@ def _parse_agent_file(file_path: str) -> dict | None:
             except Exception:
                 pass
 
+        # How the file was generated: AI-written files carry a
+        # "# codegen: ai (plan A)" header; template files (plan B / legacy) don't.
+        codegen = "ai" if "# codegen: ai" in source else "template"
+
         return {
             "name":            name,
             "description":     description,
@@ -206,6 +210,7 @@ def _parse_agent_file(file_path: str) -> dict | None:
             "file_path":       os.path.relpath(file_path, _ROOT).replace("\\", "/"),
             "source_code":     source,
             "file_categories": file_categories,
+            "codegen":         codegen,
         }
     except Exception as e:
         print(f"[sync] skipping {file_path}: {e}")
@@ -469,6 +474,7 @@ class AgentSummary(BaseModel):
     file_path:    str
     synced_at:    str
     active:       bool = True
+    codegen:      str  = "template"   # "ai" = Plan A (AI-written) | "template" = Plan B
 
 
 class AgentDetail(AgentSummary):
@@ -501,10 +507,14 @@ def list_agents():
     with _db.get_db() as conn:
         rows = _db.fetchall(
             conn,
-            "SELECT id, name, description, method, input_format, file_path, synced_at, is_active FROM agents ORDER BY id",
+            "SELECT id, name, description, method, input_format, file_path, synced_at, is_active, codegen FROM agents ORDER BY id",
         )
     agents = [
-        {**{k: v for k, v in r.items() if k != "is_active"}, "active": bool(r["is_active"])}
+        {
+            **{k: v for k, v in r.items() if k != "is_active"},
+            "active":  bool(r["is_active"]),
+            "codegen": r.get("codegen") or "template",
+        }
         for r in rows
     ]
     return {"total": len(agents), "agents": agents}
@@ -521,7 +531,11 @@ def get_agent(agent_id: int):
         row = _db.fetchone(conn, f"SELECT * FROM agents WHERE id = {ph}", (agent_id,))
     if not row:
         raise HTTPException(status_code=404, detail=f"No agent with id={agent_id}")
-    return {**{k: v for k, v in row.items() if k != "is_active"}, "active": bool(row.get("is_active", True))}
+    return {
+        **{k: v for k, v in row.items() if k != "is_active"},
+        "active":  bool(row.get("is_active", True)),
+        "codegen": row.get("codegen") or "template",
+    }
 
 
 @app.delete(

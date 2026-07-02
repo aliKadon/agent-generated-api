@@ -48,13 +48,18 @@ if DATABASE_URL:
                         file_path    TEXT,
                         source_code  TEXT,
                         synced_at    TEXT,
-                        is_active    BOOLEAN NOT NULL DEFAULT TRUE
+                        is_active    BOOLEAN NOT NULL DEFAULT TRUE,
+                        codegen      TEXT NOT NULL DEFAULT 'template'
                     )
                 """)
-                # Migration: add column to existing tables that predate this field
+                # Migration: add columns to existing tables that predate these fields
                 cur.execute("""
                     ALTER TABLE agents
                     ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE
+                """)
+                cur.execute("""
+                    ALTER TABLE agents
+                    ADD COLUMN IF NOT EXISTS codegen TEXT NOT NULL DEFAULT 'template'
                 """)
 
     def fetchall(conn, sql: str, params: tuple = ()) -> list[dict]:
@@ -77,20 +82,21 @@ if DATABASE_URL:
             cur.execute(
                 """
                 INSERT INTO agents
-                    (name, description, method, input_format, file_path, source_code, synced_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (name, description, method, input_format, file_path, source_code, synced_at, codegen)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (name) DO UPDATE SET
                     description  = EXCLUDED.description,
                     method       = EXCLUDED.method,
                     input_format = EXCLUDED.input_format,
                     file_path    = EXCLUDED.file_path,
                     source_code  = EXCLUDED.source_code,
-                    synced_at    = EXCLUDED.synced_at
+                    synced_at    = EXCLUDED.synced_at,
+                    codegen      = EXCLUDED.codegen
                 """,
                 (
                     meta["name"], meta["description"], meta["method"],
                     meta["input_format"], meta["file_path"], meta["source_code"],
-                    synced_at,
+                    synced_at, meta.get("codegen", "template"),
                 ),
             )
 
@@ -133,12 +139,17 @@ else:
                     file_path    TEXT,
                     source_code  TEXT,
                     synced_at    TEXT,
-                    is_active    INTEGER NOT NULL DEFAULT 1
+                    is_active    INTEGER NOT NULL DEFAULT 1,
+                    codegen      TEXT NOT NULL DEFAULT 'template'
                 )
             """)
-            # Migration: add column to existing tables that predate this field
+            # Migration: add columns to existing tables that predate these fields
             try:
                 conn.execute("ALTER TABLE agents ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+            except Exception:
+                pass  # column already exists
+            try:
+                conn.execute("ALTER TABLE agents ADD COLUMN codegen TEXT NOT NULL DEFAULT 'template'")
             except Exception:
                 pass  # column already exists
 
@@ -156,20 +167,21 @@ else:
         conn.execute(
             """
             INSERT INTO agents
-                (name, description, method, input_format, file_path, source_code, synced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (name, description, method, input_format, file_path, source_code, synced_at, codegen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET
                 description  = excluded.description,
                 method       = excluded.method,
                 input_format = excluded.input_format,
                 file_path    = excluded.file_path,
                 source_code  = excluded.source_code,
-                synced_at    = excluded.synced_at
+                synced_at    = excluded.synced_at,
+                codegen      = excluded.codegen
             """,
             (
                 meta["name"], meta["description"], meta["method"],
                 meta["input_format"], meta["file_path"], meta["source_code"],
-                synced_at,
+                synced_at, meta.get("codegen", "template"),
             ),
         )
 

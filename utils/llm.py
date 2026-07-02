@@ -21,14 +21,15 @@ def chat_completion_with_retry(
     max_tokens: int = 500,
     retries: int = PLANNER_RETRIES,
     base_delay: float = PLANNER_BASE_DELAY,
+    models: list[str] | None = None,
 ) -> object:
     """
-    Try each model in PLANNER_MODELS in order, retrying on transient errors.
-    Raises RuntimeError if every model fails.
+    Try each model in `models` (default PLANNER_MODELS) in order, retrying
+    on transient errors. Raises RuntimeError if every model fails.
     """
     last_error = None
 
-    for model in PLANNER_MODELS:
+    for model in (models or PLANNER_MODELS):
         for attempt in range(1, retries + 1):
             try:
                 print(f"  [planner] {model}  attempt={attempt}")

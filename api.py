@@ -623,6 +623,7 @@ class GenerateDoneResponse(BaseModel):
     name:       str
     method:     str
     file_path:  str
+    codegen:    str = "template"   # "ai" = Plan A (AI-written) | "template" = Plan B
     message:    str
 
 
@@ -906,7 +907,9 @@ def generate_continue(request: GenerateContinueRequest):
             raise HTTPException(status_code=422, detail="Provide 'answers' dict (can be {}).")
 
         from services.planner import generate_agent_code_plan, finalize_agent_plan
-        from services.generator import generate_safe_agent_code
+        # AI-written code (Plan A) with automatic fallback to the template
+        # generator (Plan B). Toggle via config.USE_AI_CODEGEN.
+        from services.ai_codegen import generate_agent_code_with_mode
 
         model      = session["selected_model"]
         agent_plan = session["agent_plan"]
@@ -921,7 +924,7 @@ def generate_continue(request: GenerateContinueRequest):
             session["description"], model.name, code_plan,
             request.answers, model.inferred_method, tools,
         )
-        code = generate_safe_agent_code(
+        code, codegen_mode = generate_agent_code_with_mode(
             plan=final_plan, selected_model=model.name, provider=model.provider,
             supported_task=model.supported_task, inferred_method=model.inferred_method,
             has_chat_template=model.has_chat_template, selected_tools=tools,
@@ -949,7 +952,8 @@ def generate_continue(request: GenerateContinueRequest):
             name       = safe_name,
             method     = model.inferred_method,
             file_path  = os.path.relpath(full_path, _ROOT).replace("\\", "/"),
-            message    = f"Agent '{safe_name}' created and saved to database.",
+            codegen    = codegen_mode,
+            message    = f"Agent '{safe_name}' created and saved to database (codegen: {codegen_mode}).",
         )
 
     raise HTTPException(status_code=422, detail=f"Unknown session step: {session['step']}")

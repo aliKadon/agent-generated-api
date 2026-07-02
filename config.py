@@ -104,6 +104,36 @@ TRANSIENT_ERROR_MARKERS: tuple[str, ...] = (
     "504", "502", "503", "timeout", "Gateway", "connection",
 )
 
+# ── AI code generation (Plan A) ───────────────────────────────────────────────
+# When True, agent code is written by a code LLM (services/ai_codegen.py) and
+# validated before use. When False — or whenever the AI path fails — the
+# original template generator (services/generator.py) is used unchanged.
+# REVERT TO PLAN B: set USE_AI_CODEGEN = False. Nothing else needs to change.
+
+USE_AI_CODEGEN: bool = True
+
+# Code-capable models tried in order for the codegen step (needs stronger
+# models than the JSON planner calls).
+CODEGEN_MODELS: list[str] = [
+    "Qwen/Qwen2.5-Coder-32B-Instruct",
+    "Qwen/Qwen2.5-Coder-7B-Instruct:featherless-ai",
+    "Qwen/Qwen2.5-7B-Instruct:featherless-ai",
+]
+
+CODEGEN_MAX_TOKENS: int      = 2000   # run_inference bodies can be long
+CODEGEN_REPAIR_ATTEMPTS: int = 2      # extra fix-it rounds after the first try
+
+# Static-analysis rules applied to AI-generated code before it is accepted.
+CODEGEN_FORBIDDEN_IMPORTS: tuple[str, ...] = (
+    "subprocess", "socket", "ctypes", "importlib",
+    "pty", "pickle", "marshal", "multiprocessing", "shutil",
+)
+CODEGEN_FORBIDDEN_CALLS: tuple[str, ...] = (
+    "eval", "exec", "compile", "__import__",
+    "os.system", "os.popen", "os.remove", "os.rmdir",
+    "os.unlink", "os.removedirs", "shutil.rmtree",
+)
+
 # ── Generation defaults ───────────────────────────────────────────────────────
 
 DEFAULT_TEMPERATURE: float = 0.7

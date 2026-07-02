@@ -27,9 +27,12 @@ from services.planner import (
 )
 from services.generator import (
     decide_tools,
-    generate_safe_agent_code,
     create_agent_python_file,
 )
+# generate_agent_code_with_mode: AI-written code (Plan A) with automatic
+# fallback to the original template generator (Plan B). Returns (code, mode)
+# where mode is "ai" or "template". Toggle via config.USE_AI_CODEGEN.
+from services.ai_codegen import generate_agent_code_with_mode
 from tools.registery import ALL_TOOLS
 
 load_dotenv()
@@ -143,7 +146,7 @@ def main() -> None:
     print("\nFinal plan:"); print(json.dumps(final_plan, indent=2))
 
     # ── 7. Generate and write the agent file ──────────────────────────────────
-    code = generate_safe_agent_code(
+    code, codegen_mode = generate_agent_code_with_mode(
         plan=final_plan,
         selected_model=selected_model.name,
         provider=selected_model.provider,
@@ -154,7 +157,7 @@ def main() -> None:
     )
 
     fname = create_agent_python_file(agent_plan["agent_type"], code)
-    print(f"\n✅ Agent file: {fname}")
+    print(f"\n✅ Agent file: {fname}  (codegen: {codegen_mode})")
 
     pip_pkgs = list({ALL_TOOLS[t]["pip"] for t in selected_tools if ALL_TOOLS[t].get("pip")})
     if pip_pkgs:

@@ -1066,6 +1066,8 @@ class ChatResponse(BaseModel):
     reply:      str
     session_id: str
     file_url:   str | None = None
+    agent_used: str | None = None   # name of the agent that handled the message (None = orchestrator chat)
+    agent_id:   int | None = None   # DB id of that agent — same id as GET /agents
     debug:      dict | None = None  # routing + agent result info (always present)
 
 
@@ -1238,9 +1240,44 @@ def chat(request: ChatRequest, req: Request):
         print(f"  [chat] route={route_result}")
         print(f"  [chat] action_result={action_result!r}")
 
+        # Which agent actually handled the message (name + DB id, same id as
+        # GET /agents). Matched by file_path first — immune to naming mismatches
+        # between DB records and discover_agents() output — then by name.
+        _used_agent_name = (
+            route_result.get("target") if route_result.get("action") == "agent" else None
+        )
+        _used_agent_id = None
+        if _used_agent_name:
+            _used_cfg = next((a for a in active_agents if a["name"] == _used_agent_name), None)
+            ph = "%s" if os.getenv("DATABASE_URL") else "?"
+            with _db.get_db() as _conn:
+                _row = None
+                if _used_cfg and _used_cfg.get("file"):
+                    _row = _db.fetchone(
+                        _conn, f"SELECT id FROM agents WHERE file_path = {ph}",
+                        (_used_cfg["file"],),
+                    )
+                if not _row:
+                    _row = _db.fetchone(
+                        _conn, f"SELECT id FROM agents WHERE name IN ({ph}, {ph})",
+                        (_used_agent_name, f"{_used_agent_name}_agent"),
+                    )
+            if _row:
+                _used_agent_id = _row["id"]
+
+        # Suffix appended to the reply text so the agent info is visible there too.
+        _agent_tag = ""
+        if _used_agent_name:
+            _agent_tag = (
+                f"\n\n[Agent used: {_used_agent_name} (id: {_used_agent_id})]"
+                if _used_agent_id is not None
+                else f"\n\n[Agent used: {_used_agent_name}]"
+            )
+
         _debug_info = {
             "action":       route_result.get("action"),
             "target_agent": route_result.get("target"),
+            "agent_id":     _used_agent_id,
             "reason":       route_result.get("reason"),
             "agent_result": action_result[:500] if action_result else None,
         }
@@ -1256,9 +1293,11 @@ def chat(request: ChatRequest, req: Request):
             history.append({"role": "user",      "content": request.message})
             history.append({"role": "assistant", "content": _agent_error})
             return {
-                "reply":      _agent_error,
+                "reply":      _agent_error + _agent_tag,
                 "session_id": request.session_id,
                 "file_url":   None,
+                "agent_used": _used_agent_name,
+                "agent_id":   _used_agent_id,
                 "debug":      _debug_info,
             }
 
@@ -1276,9 +1315,11 @@ def chat(request: ChatRequest, req: Request):
         file_url = _extract_file_url(action_result, base)
         print(f"  [chat] file_url={file_url!r}")
         return {
-            "reply":      reply,
+            "reply":      reply + _agent_tag,
             "session_id": request.session_id,
             "file_url":   file_url,
+            "agent_used": _used_agent_name,
+            "agent_id":   _used_agent_id,
             "debug":      _debug_info,
         }
 

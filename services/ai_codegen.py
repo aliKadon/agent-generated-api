@@ -20,6 +20,7 @@ Responsibilities:
 """
 
 import ast
+import inspect
 import json
 import os
 import sys
@@ -58,6 +59,39 @@ _ALLOWED_IMPORT_ROOTS = frozenset({
 })
 
 
+# ── real API signature of the target InferenceClient method ──────────────────
+# Code LLMs hallucinate parameters by analogy (e.g. text_to_video(height=...)
+# borrowed from text_to_image). Grounding the prompt in the INSTALLED method
+# signature — and rejecting unknown kwargs in the validator — prevents agents
+# that only fail at runtime.
+
+def _inference_method_params(method_name: str) -> tuple[set[str] | None, str | None]:
+    """
+    Return (allowed_kwarg_names, signature_string) for the installed
+    InferenceClient method, or (None, None) when it can't be introspected
+    (unknown method, C-level callable, or the method takes **kwargs —
+    in which case strict validation would give false positives).
+    """
+    fn = getattr(InferenceClient, method_name, None)
+    if fn is None or not callable(fn):
+        return None, None
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return None, None
+
+    allowed: set[str] = set()
+    for name, p in sig.parameters.items():
+        if name == "self":
+            continue
+        if p.kind == inspect.Parameter.VAR_KEYWORD:
+            return None, str(sig)   # **kwargs → anything goes, skip strict check
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                      inspect.Parameter.KEYWORD_ONLY):
+            allowed.add(name)
+    return (allowed or None), str(sig)
+
+
 # ── prompt building ───────────────────────────────────────────────────────────
 
 _EXAMPLE_CHAT = '''\
@@ -94,7 +128,21 @@ def run_inference(client, model_name, plan, user_input):
     return "Image saved: " + out_path'''
 
 
-def _build_codegen_system(inferred_method: str, selected_tools: list[str]) -> str:
+def _build_codegen_system(
+    inferred_method: str,
+    selected_tools: list[str],
+    method_sig: str | None = None,
+) -> str:
+    sig_note = ""
+    if method_sig:
+        sig_note = (
+            f"\nEXACT signature of client.{inferred_method} in the INSTALLED "
+            f"huggingface_hub version:\n"
+            f"    client.{inferred_method}{method_sig}\n"
+            "Use ONLY parameters from this signature. Do NOT borrow parameters "
+            "from similar methods (e.g. text_to_video does NOT take height/width "
+            "even though text_to_image does).\n"
+        )
     tools_note = (
         "- run_tools(user_input) -> str : runs the agent's tools and returns "
         'combined context text ("" when nothing triggered). Prepend it to the '
@@ -120,6 +168,7 @@ Already defined in the file BEFORE your code (do NOT redefine or reassign them):
 - HISTORY       : list global for conversation history — trim to the last {HISTORY_MAX_MESSAGES} messages
 - HF_TOKEN      : str global
 {tools_note}
+{sig_note}
 Hard rules:
 1. The inference call MUST use the InferenceClient method "{inferred_method}"
    on `client` (e.g. client.{inferred_method}(...)).
@@ -207,8 +256,16 @@ def _dotted_name(node: ast.AST) -> str:
     return ".".join(reversed(parts))
 
 
-def _validate_ai_code(code: str) -> str | None:
-    """Return an error description, or None if the code passes all checks."""
+def _validate_ai_code(
+    code: str,
+    inferred_method: str | None = None,
+    allowed_kwargs: set[str] | None = None,
+) -> str | None:
+    """
+    Return an error description, or None if the code passes all checks.
+    When inferred_method + allowed_kwargs are given, calls to that method are
+    also checked for hallucinated keyword arguments against the real signature.
+    """
     try:
         tree = ast.parse(code)
     except SyntaxError as ex:
@@ -258,6 +315,19 @@ def _validate_ai_code(code: str) -> str | None:
             short = name.split(".")[-1]
             if short in ("eval", "exec", "__import__"):
                 return f"Forbidden call: {name}()"
+            # hallucinated-parameter check against the real installed signature
+            if (
+                inferred_method and allowed_kwargs
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == inferred_method
+            ):
+                for kw in node.keywords:
+                    if kw.arg and kw.arg not in allowed_kwargs:
+                        return (
+                            f"client.{inferred_method}() has no parameter '{kw.arg}' "
+                            f"in the installed huggingface_hub. Allowed parameters: "
+                            f"{', '.join(sorted(allowed_kwargs))}"
+                        )
 
     return None
 
@@ -427,7 +497,8 @@ def generate_agent_code_ai(
     plan_copy["system_prompt"]   = system_prompt
 
     client       = InferenceClient(api_key=os.getenv("HF_TOKEN"))
-    system_msg   = _build_codegen_system(inferred_method, selected_tools)
+    allowed_kwargs, method_sig = _inference_method_params(inferred_method)
+    system_msg   = _build_codegen_system(inferred_method, selected_tools, method_sig)
     user_msg     = _build_codegen_user(
         plan_copy, selected_model, provider, supported_task,
         inferred_method, selected_tools,
@@ -448,7 +519,7 @@ def generate_agent_code_ai(
         raw     = r.choices[0].message.content or ""
         ai_code = _extract_code(raw)
 
-        error = _validate_ai_code(ai_code)
+        error = _validate_ai_code(ai_code, inferred_method, allowed_kwargs)
         if error is None:
             full = _assemble_agent_file(
                 ai_code, plan_copy, selected_model, provider, supported_task,
